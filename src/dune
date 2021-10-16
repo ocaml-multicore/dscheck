@@ -1,5 +1,2 @@
 (executable
- (foreign_stubs
-  (language c)
-  (names atomic_stubs))
  (name test_atomics))

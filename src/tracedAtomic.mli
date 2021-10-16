@@ -45,3 +45,6 @@ val incr : int t -> unit
 
 (** [decr r] atomically decrements the value of [r] by [1]. *)
 val decr : int t -> unit
+
+(** trace the execution of [f] *)
+val trace : (unit -> 'a) -> 'a
