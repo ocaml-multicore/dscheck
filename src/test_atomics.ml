@@ -8,4 +8,3 @@ let do_test () =
 
 let () =
   Atomic.trace do_test
-
