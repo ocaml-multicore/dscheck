@@ -1,5 +1,5 @@
 open EffectHandlers
-open EffectHandlers.Deep
+open EffectHandlers.Shallow
 
 type 'a t = 'a Atomic.t
 
@@ -18,13 +18,14 @@ type trace_cell = { op : atomic_op; process_id : int; repr : Obj.t }
 type process_data = {
   id : int;
   mutable event_counter : int;
-  mutable resume_func : unit -> unit;
+  mutable resume_func : (unit, unit) handler -> unit;
   mutable finished : bool;
 }
 
 let processes = Hashtbl.create 10
 
 let current_process = ref 0
+let finished_processes = ref 0
 
 let trace_list = ref []
 
@@ -38,17 +39,18 @@ let update_process_data f =
 
 let finish_process () =
   let process_rec = Hashtbl.find processes !current_process in
-  process_rec.finished <- true
+  process_rec.finished <- true;
+  incr finished_processes
 
 let handler runner =
   {
     retc =
       (fun _ ->
         (
-          Printf.printf "Finished process %d\n" !current_process;
+        Printf.printf "Finished process %d\n" !current_process;
         finish_process ();
         runner ()));
-    exnc = (fun _ -> ());
+    exnc = (fun s -> raise s);
     effc =
       (fun (type a) (e : a eff) ->
         match e with
@@ -58,7 +60,7 @@ let handler runner =
                 Printf.printf "Process %d: Make\n" !current_process;
                 let m = Atomic.make v in
                 add_trace Make (Obj.repr m);
-                update_process_data (fun () -> continue k m);
+                update_process_data (fun h -> continue_with k m h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -66,8 +68,9 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: Get\n" !current_process;
+                let m = Atomic.get v in
                 add_trace Get (Obj.repr v);
-                update_process_data (fun () -> continue k (Atomic.get v));
+                update_process_data (fun h -> continue_with k m h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -75,8 +78,9 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: Set\n" !current_process;
+                let m = Atomic.set r v in
                 add_trace Set (Obj.repr r);
-                update_process_data (fun () -> continue k (Atomic.set r v));
+                update_process_data (fun h -> continue_with k m h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -84,8 +88,9 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: Exchange\n" !current_process;
+                let m = Atomic.exchange a b in
                 add_trace Exchange (Obj.repr a);
-                update_process_data (fun () -> continue k (Atomic.exchange a b));
+                update_process_data (fun h -> continue_with k m h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -93,9 +98,10 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: CAS\n" !current_process;
+                let m = Atomic.compare_and_set x s v in
                 add_trace CompareAndSwap (Obj.repr x);
-                update_process_data (fun () ->
-                    continue k (Atomic.compare_and_set x s v));
+                update_process_data (fun h ->
+                    continue_with k m h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -103,14 +109,15 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: FetchAndAdd\n" !current_process;
+                let m = Atomic.fetch_and_add v x in
                 add_trace FetchAndAdd (Obj.repr v);
-                update_process_data (fun () ->
-                    continue k (Atomic.fetch_and_add v x));
+                update_process_data (fun h ->
+                    continue_with k m h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
         | _ ->
-            Printf.printf "Process %d finished\n" !current_process;
+            Printf.printf "Unknown on %d\n" !current_process;
             None);
   }
 
@@ -120,20 +127,21 @@ let trace () =
   tracing := true;
   let num_processes = Hashtbl.length processes in
   (* do our first trace in a haphazard fashion *)
-  let rec round_robin_run finished_counter () =
-    if finished_counter >= num_processes then (* We are done *)
+  let rec round_robin_run () =
+    if !finished_processes == num_processes then
       ()
     else
       let process_to_run = Hashtbl.find processes !current_process in
       if process_to_run.finished then (
+        Printf.printf "Finding an unfinished process. %d finished\n" !current_process;
         current_process := (!current_process + 1) mod num_processes;
-        round_robin_run (finished_counter + 1) ())
+        round_robin_run ())
       else
         (* process not finished, need to run it*)
         (Printf.printf "Switching to process %d\n" !current_process;
-        match_with process_to_run.resume_func () (handler (round_robin_run 0)))
+        process_to_run.resume_func (handler round_robin_run))
   in
-  round_robin_run 0 ();
+  round_robin_run ();
   tracing := false
 
 let make v = if !tracing then perform (Make v) else Atomic.make v
@@ -156,9 +164,11 @@ let incr r = ignore (fetch_and_add r 1)
 
 let decr r = ignore (fetch_and_add r (-1))
 
-let spawn _f =
+let spawn f =
   let new_id = Hashtbl.length processes in
+  let fiber_f h =
+    continue_with (fiber f) () h in
   Hashtbl.add processes new_id
-    { id = new_id; event_counter = 0; resume_func = _f; finished = false }
+    { id = new_id; event_counter = 0; resume_func = fiber_f; finished = false }
 
 let clear () = ()
