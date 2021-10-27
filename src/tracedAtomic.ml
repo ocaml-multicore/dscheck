@@ -22,6 +22,29 @@ type process_data = {
   mutable finished : bool;
 }
 
+
+let tracing = ref false
+
+let make v = if !tracing then perform (Make v) else Atomic.make v
+
+let get r = if !tracing then perform (Get r) else Atomic.get r
+
+let set r v = if !tracing then perform (Set (r, v)) else Atomic.set r v
+
+let exchange r v =
+  if !tracing then perform (Exchange (r, v)) else Atomic.exchange r v
+
+let compare_and_set r seen v =
+  if !tracing then perform (CompareAndSwap (r, seen, v))
+  else Atomic.compare_and_set r seen v
+
+let fetch_and_add r n =
+  if !tracing then perform (FetchAndAdd (r, n)) else Atomic.fetch_and_add r n
+
+let incr r = ignore (fetch_and_add r 1)
+
+let decr r = ignore (fetch_and_add r (-1))
+
 let processes = Hashtbl.create 10
 
 let current_process = ref 0
@@ -40,7 +63,7 @@ let update_process_data f =
 let finish_process () =
   let process_rec = Hashtbl.find processes !current_process in
   process_rec.finished <- true;
-  incr finished_processes
+  finished_processes := !finished_processes + 1
 
 let handler runner =
   {
@@ -68,9 +91,8 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: Get\n" !current_process;
-                let m = Atomic.get v in
                 add_trace Get (Obj.repr v);
-                update_process_data (fun h -> continue_with k m h);
+                update_process_data (fun h -> continue_with k (Atomic.get v) h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -78,9 +100,8 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: Set\n" !current_process;
-                let m = Atomic.set r v in
                 add_trace Set (Obj.repr r);
-                update_process_data (fun h -> continue_with k m h);
+                update_process_data (fun h -> continue_with k (Atomic.set r v) h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -88,9 +109,8 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: Exchange\n" !current_process;
-                let m = Atomic.exchange a b in
                 add_trace Exchange (Obj.repr a);
-                update_process_data (fun h -> continue_with k m h);
+                update_process_data (fun h -> continue_with k (Atomic.exchange a b) h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -98,10 +118,9 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: CAS\n" !current_process;
-                let m = Atomic.compare_and_set x s v in
                 add_trace CompareAndSwap (Obj.repr x);
                 update_process_data (fun h ->
-                    continue_with k m h);
+                    continue_with k (Atomic.compare_and_set x s v) h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -109,10 +128,9 @@ let handler runner =
             Some
               (fun (k : (a, _) continuation) ->
                 Printf.printf "Process %d: FetchAndAdd\n" !current_process;
-                let m = Atomic.fetch_and_add v x in
                 add_trace FetchAndAdd (Obj.repr v);
                 update_process_data (fun h ->
-                    continue_with k m h);
+                    continue_with k (Atomic.fetch_and_add v x) h);
                 current_process :=
                   (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
@@ -120,8 +138,6 @@ let handler runner =
             Printf.printf "Unknown on %d\n" !current_process;
             None);
   }
-
-let tracing = ref false
 
 let trace () =
   tracing := true;
@@ -142,27 +158,8 @@ let trace () =
         process_to_run.resume_func (handler round_robin_run))
   in
   round_robin_run ();
+  (* first trace done. Now use the trace data to explore the state space *)
   tracing := false
-
-let make v = if !tracing then perform (Make v) else Atomic.make v
-
-let get r = if !tracing then perform (Get r) else Atomic.get r
-
-let set r v = if !tracing then perform (Set (r, v)) else Atomic.set r v
-
-let exchange r v =
-  if !tracing then perform (Exchange (r, v)) else Atomic.exchange r v
-
-let compare_and_set r seen v =
-  if !tracing then perform (CompareAndSwap (r, seen, v))
-  else Atomic.compare_and_set r seen v
-
-let fetch_and_add r n =
-  if !tracing then perform (FetchAndAdd (r, n)) else Atomic.fetch_and_add r n
-
-let incr r = ignore (fetch_and_add r 1)
-
-let decr r = ignore (fetch_and_add r (-1))
 
 let spawn f =
   let new_id = Hashtbl.length processes in
