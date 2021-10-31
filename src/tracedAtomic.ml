@@ -17,7 +17,7 @@ module IntSet = Set.Make(
     type t = int
   end )
 
-let set_to_string s =
+let _set_to_string s =
   IntSet.fold (fun y x -> (string_of_int y) ^ "," ^ x) s ""
 
 type atomic_op = Make | Get | Set | Exchange | CompareAndSwap | FetchAndAdd | Finish
@@ -59,25 +59,23 @@ let incr r = ignore (fetch_and_add r 1)
 
 let decr r = ignore (fetch_and_add r (-1))
 
-let processes = Hashtbl.create 10
+let processes = CCVector.create ()
 
 let current_process = ref 0
 let finished_processes = ref 0
 
+let current_enabled = ref IntSet.empty
+
 let add_trace op repr =
-  let enabled = Hashtbl.to_seq processes
-                |> Seq.filter (fun (_,proc) -> not proc.finished)
-                |> Seq.map (fun (id,_) -> id)
-                |> IntSet.of_seq in
-  CCVector.push current_trace { op; process_id = !current_process; repr; enabled }
+  CCVector.push current_trace { op; process_id = !current_process; repr; enabled = !current_enabled }
 
 let update_process_data f =
-  let process_rec = Hashtbl.find processes !current_process in
+  let process_rec = CCVector.get processes !current_process in
   process_rec.resume_func <- f;
   process_rec.event_counter <- process_rec.event_counter + 1
 
 let finish_process () =
-  let process_rec = Hashtbl.find processes !current_process in
+  let process_rec = CCVector.get processes !current_process in
   process_rec.finished <- true;
   finished_processes := !finished_processes + 1
 
@@ -99,32 +97,24 @@ let handler runner =
                 let m = Atomic.make v in
                 add_trace Make (Obj.repr m);
                 update_process_data (fun h -> continue_with k m h);
-                current_process :=
-                  (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
          | Get v ->
            Some
              (fun (k : (a, _) continuation) ->
                 add_trace Get (Obj.repr v);
                 update_process_data (fun h -> continue_with k (Atomic.get v) h);
-                current_process :=
-                  (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
          | Set (r, v) ->
            Some
              (fun (k : (a, _) continuation) ->
                 add_trace Set (Obj.repr r);
                 update_process_data (fun h -> continue_with k (Atomic.set r v) h);
-                current_process :=
-                  (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
          | Exchange (a, b) ->
            Some
              (fun (k : (a, _) continuation) ->
                 add_trace Exchange (Obj.repr a);
                 update_process_data (fun h -> continue_with k (Atomic.exchange a b) h);
-                current_process :=
-                  (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
          | CompareAndSwap (x, s, v) ->
            Some
@@ -132,8 +122,6 @@ let handler runner =
                 add_trace CompareAndSwap (Obj.repr x);
                 update_process_data (fun h ->
                     continue_with k (Atomic.compare_and_set x s v) h);
-                current_process :=
-                  (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
          | FetchAndAdd (v, x) ->
            Some
@@ -141,8 +129,6 @@ let handler runner =
                 add_trace FetchAndAdd (Obj.repr v);
                 update_process_data (fun h ->
                     continue_with k (Atomic.fetch_and_add v x) h);
-                current_process :=
-                  (!current_process + 1) mod Hashtbl.length processes;
                 runner ())
          | _ ->
            Printf.printf "Unknown on %d\n" !current_process;
@@ -150,10 +136,10 @@ let handler runner =
   }
 
 let spawn f =
-  let new_id = Hashtbl.length processes in
+  let new_id = CCVector.length processes in
   let fiber_f h =
     continue_with (fiber f) () h in
-  Hashtbl.add processes new_id
+  CCVector.push processes
     { id = new_id; event_counter = 0; resume_func = fiber_f; initial_func = f; finished = false }
 
 (*let reset_processes () =
@@ -182,9 +168,6 @@ let reconcile_trace_state () =
     CCVector.push state_stack { enabled; dones };
   done;
   let rec update_state current_pos =
-    if !trace_counter == 393317 then begin
-      Printf.printf "update_state, current_pos: %d, current_trace: %d, state stack: %d\n" current_pos (CCVector.length current_trace) (CCVector.length state_stack)
-    end;
     let trace_ele = CCVector.get current_trace current_pos in
     let state_ele = CCVector.get state_stack current_pos in
     state_ele.dones <- IntSet.add (trace_ele.process_id) state_ele.dones;
@@ -192,26 +175,33 @@ let reconcile_trace_state () =
       (* we've completed everything at this state. Now we need to nuke this node
          and update the next element in the state stack *)
       begin
-        if !trace_counter == 393317 then begin
-          Printf.printf "enabled: %s, dones: %s\n" (set_to_string state_ele.enabled) (set_to_string state_ele.dones)
-        end;
         CCVector.remove_and_shift state_stack current_pos;
-        update_state (current_pos-1)
+        if current_pos > 0 then
+          update_state (current_pos-1)
+        else
+          begin
+            (* We're done *)
+            ()
+          end
       end
     else
       ()
   in update_state ((CCVector.length current_trace)-1)
 
 let trace_start_func = ref (fun () -> ())
-
 let last_time = ref (Sys.time ())
+
+let print_progress () =
+  CCVector.to_seq state_stack |> OSeq.zip_index |> OSeq.iter (fun (x,y) ->
+    Printf.printf "%d %d %d\n" x (IntSet.cardinal y.enabled) (IntSet.cardinal y.dones)
+  )
 
 let trace f =
   trace_start_func := f;
   f (); (* initial start *)
   tracing := true;
   (* cache the number of processes in case it's expensive*)
-  let num_processes = Hashtbl.length processes in
+  let num_processes = CCVector.length processes in
   (* current number of ops we are through the current run *)
   let rec run_trace () =
     if !finished_processes == num_processes then
@@ -222,15 +212,16 @@ let trace f =
          we now at a depth in the trace that is longer than anything we've
          explored before?*)
       begin
+        current_enabled := CCVector.to_seq processes
+                           |> OSeq.zip_index
+                           |> Seq.filter (fun (_,proc) -> not proc.finished)
+                           |> Seq.map (fun (id,_) -> id)
+                           |> IntSet.of_seq;
         let (process_id_to_run, process_to_run) = if CCVector.length current_trace >= CCVector.length state_stack then
             (* We need to essentially continue exploring the state so we can
                add to the trace and reconcile later on. *)
-            let enabled = Hashtbl.to_seq processes
-                          |> Seq.filter (fun (_,proc) -> not proc.finished)
-                          |> Seq.map (fun (id,_) -> id)
-                          |> IntSet.of_seq in
-            let process_id_to_run = IntSet.min_elt enabled in
-            let process_to_run = Hashtbl.find processes process_id_to_run in
+            let process_id_to_run = IntSet.min_elt !current_enabled in
+            let process_to_run = CCVector.get processes process_id_to_run in
             (process_id_to_run, process_to_run)
           else
             (* We've already been in a state this deep (or just created one). There
@@ -240,7 +231,7 @@ let trace f =
               let last_state = CCVector.get state_stack (CCVector.length current_trace) in
               let process_id_to_run = IntSet.diff last_state.enabled last_state.dones
                                       |> IntSet.min_elt in
-              let process_to_run = Hashtbl.find processes process_id_to_run in
+              let process_to_run = CCVector.get processes process_id_to_run in
               (process_id_to_run, process_to_run)
             end
         in
@@ -248,22 +239,30 @@ let trace f =
         process_to_run.resume_func (handler run_trace)
       end
   in
-  while true do
+  let progress_iterations = 1000000 in
+  let am_done = ref false in
+  while not !am_done do
+    tracing := true;
     run_trace ();
     reconcile_trace_state ();
     CCVector.clear current_trace;
-    Hashtbl.clear processes;
+    CCVector.clear processes;
     finished_processes := 0;
     tracing := false;
     !trace_start_func ();
     trace_counter := !trace_counter + 1;
-    if !trace_counter mod 100000 == 0 then begin
+    if !trace_counter mod progress_iterations == 0 then begin
       let new_time = Sys.time () in
       let duration = new_time -. !last_time in
-      Printf.printf "Ran %d traces (%f traces/second)\n%!" !trace_counter ((float_of_int 10000) /. duration);
+      let top_state = CCVector.get state_stack 0 in
+      let percent_done = (100 * (IntSet.cardinal top_state.dones)) / (IntSet.cardinal top_state.enabled) in
+      Printf.printf "Ran %d traces (%f traces/second) (~%d%%) (%d %d)\n%!" !trace_counter ((float_of_int progress_iterations) /. duration) percent_done (IntSet.cardinal top_state.dones) (IntSet.cardinal top_state.enabled);
+      print_progress ();
       last_time := new_time
     end;
-    tracing := true
+    (* last, check for completion *)
+    if CCVector.length state_stack == 0 then
+      am_done := true
   done;
   tracing := false
 
