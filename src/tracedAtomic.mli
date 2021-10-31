@@ -46,7 +46,7 @@ val incr : int t -> unit
 val decr : int t -> unit
 (** [decr r] atomically decrements the value of [r] by [1]. *)
 
-val trace : unit -> unit
+val trace : (unit -> unit) -> unit
 (** start the simulation trace *)
 
 val spawn : (unit -> unit) -> unit

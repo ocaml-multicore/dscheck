@@ -33,12 +33,11 @@ let add_and_check list_head n () =
   assert(add_node list_head n);
   assert(check_node list_head n)
 
-let create_test upto =
+let create_test upto () =
   let list_head = Atomic.make { value = 0 ; next = None } in
   for x = 1 to upto do
     Atomic.spawn (add_and_check list_head x);
   done
 
 let () =
-  create_test 3;
-  Atomic.trace ()
+  Atomic.trace (create_test 3)

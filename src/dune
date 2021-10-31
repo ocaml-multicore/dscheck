@@ -1,2 +1,3 @@
 (executable
+ (libraries containers)
  (name test_atomics))
