@@ -17,8 +17,8 @@ module IntSet = Set.Make(
     type t = int
   end )
 
-let print_set t =
-  IntSet.iter (fun x -> Printf.printf "%d," x) t
+let set_to_string s =
+  IntSet.fold (fun y x -> (string_of_int y) ^ "," ^ x) s ""
 
 type atomic_op = Make | Get | Set | Exchange | CompareAndSwap | FetchAndAdd | Finish
 
@@ -86,7 +86,6 @@ let handler runner =
     retc =
       (fun _ ->
          (
-           Printf.printf "Finished process %d\n" !current_process;
            add_trace Finish (Obj.repr None);
            finish_process ();
            runner ()));
@@ -97,7 +96,6 @@ let handler runner =
          | Make v ->
            Some
              (fun (k : (a, _) continuation) ->
-                Printf.printf "Process %d: Make\n" !current_process;
                 let m = Atomic.make v in
                 add_trace Make (Obj.repr m);
                 update_process_data (fun h -> continue_with k m h);
@@ -107,7 +105,6 @@ let handler runner =
          | Get v ->
            Some
              (fun (k : (a, _) continuation) ->
-                Printf.printf "Process %d: Get\n" !current_process;
                 add_trace Get (Obj.repr v);
                 update_process_data (fun h -> continue_with k (Atomic.get v) h);
                 current_process :=
@@ -116,7 +113,6 @@ let handler runner =
          | Set (r, v) ->
            Some
              (fun (k : (a, _) continuation) ->
-                Printf.printf "Process %d: Set\n" !current_process;
                 add_trace Set (Obj.repr r);
                 update_process_data (fun h -> continue_with k (Atomic.set r v) h);
                 current_process :=
@@ -125,7 +121,6 @@ let handler runner =
          | Exchange (a, b) ->
            Some
              (fun (k : (a, _) continuation) ->
-                Printf.printf "Process %d: Exchange\n" !current_process;
                 add_trace Exchange (Obj.repr a);
                 update_process_data (fun h -> continue_with k (Atomic.exchange a b) h);
                 current_process :=
@@ -134,7 +129,6 @@ let handler runner =
          | CompareAndSwap (x, s, v) ->
            Some
              (fun (k : (a, _) continuation) ->
-                Printf.printf "Process %d: CAS\n" !current_process;
                 add_trace CompareAndSwap (Obj.repr x);
                 update_process_data (fun h ->
                     continue_with k (Atomic.compare_and_set x s v) h);
@@ -144,7 +138,6 @@ let handler runner =
          | FetchAndAdd (v, x) ->
            Some
              (fun (k : (a, _) continuation) ->
-                Printf.printf "Process %d: FetchAndAdd\n" !current_process;
                 add_trace FetchAndAdd (Obj.repr v);
                 update_process_data (fun h ->
                     continue_with k (Atomic.fetch_and_add v x) h);
@@ -171,8 +164,9 @@ let spawn f =
       v.finished <- false;
     ) processes*)
 
+let trace_counter = ref 0
+
 let reconcile_trace_state () =
-  Printf.printf "Reconciling trace with state\n";
   (* Here we have a trace in [current_trace] and a state stack in [state_stack].
      What we need to ensure is that if the trace is longer than the state stack
      we create new state stack entries for each of the new states and populate
@@ -181,19 +175,16 @@ let reconcile_trace_state () =
      [dones] is equal to [enabled] then we remove the last element from the state
      stack, snip the last element from the trace and repeat the whole process. *)
   let trace_len = CCVector.length current_trace in
-  Printf.printf "Current trace len: %d\n" trace_len;
-  Printf.printf "Current state length: %d\n" (CCVector.length state_stack);
   while trace_len > CCVector.length state_stack do
     let nth_trace = CCVector.get current_trace (CCVector.length state_stack) in
     let enabled = nth_trace.enabled in
     let dones = IntSet.empty in
-    Printf.printf "Adding dones: "; print_set dones ; Printf.printf " enabled: "; print_set enabled;
-    Printf.printf " at state_stack: %d\n" (CCVector.length state_stack);
     CCVector.push state_stack { enabled; dones };
   done;
-  Printf.printf "New state length: %d\n" (CCVector.length state_stack);
   let rec update_state current_pos =
-    Printf.printf "Updating pos: %d\n" current_pos;
+    if !trace_counter == 393317 then begin
+      Printf.printf "update_state, current_pos: %d, current_trace: %d, state stack: %d\n" current_pos (CCVector.length current_trace) (CCVector.length state_stack)
+    end;
     let trace_ele = CCVector.get current_trace current_pos in
     let state_ele = CCVector.get state_stack current_pos in
     state_ele.dones <- IntSet.add (trace_ele.process_id) state_ele.dones;
@@ -201,6 +192,9 @@ let reconcile_trace_state () =
       (* we've completed everything at this state. Now we need to nuke this node
          and update the next element in the state stack *)
       begin
+        if !trace_counter == 393317 then begin
+          Printf.printf "enabled: %s, dones: %s\n" (set_to_string state_ele.enabled) (set_to_string state_ele.dones)
+        end;
         CCVector.remove_and_shift state_stack current_pos;
         update_state (current_pos-1)
       end
@@ -209,6 +203,8 @@ let reconcile_trace_state () =
   in update_state ((CCVector.length current_trace)-1)
 
 let trace_start_func = ref (fun () -> ())
+
+let last_time = ref (Sys.time ())
 
 let trace f =
   trace_start_func := f;
@@ -241,7 +237,6 @@ let trace f =
                should always be a state remaining in the [enabled] - [dones] set.
                Pick the smallest state in that set to run. *)
             begin
-              Printf.printf "State stack len: %d, current trace len: %d\n" (CCVector.length state_stack) (CCVector.length current_trace);
               let last_state = CCVector.get state_stack (CCVector.length current_trace) in
               let process_id_to_run = IntSet.diff last_state.enabled last_state.dones
                                       |> IntSet.min_elt in
@@ -250,12 +245,10 @@ let trace f =
             end
         in
         current_process := process_id_to_run;
-        (Printf.printf "Switching to process %d\n" !current_process;
-         process_to_run.resume_func (handler run_trace))
+        process_to_run.resume_func (handler run_trace)
       end
   in
   while true do
-    Printf.printf "\n";
     run_trace ();
     reconcile_trace_state ();
     CCVector.clear current_trace;
@@ -263,6 +256,13 @@ let trace f =
     finished_processes := 0;
     tracing := false;
     !trace_start_func ();
+    trace_counter := !trace_counter + 1;
+    if !trace_counter mod 100000 == 0 then begin
+      let new_time = Sys.time () in
+      let duration = new_time -. !last_time in
+      Printf.printf "Ran %d traces (%f traces/second)\n%!" !trace_counter ((float_of_int 10000) /. duration);
+      last_time := new_time
+    end;
     tracing := true
   done;
   tracing := false
