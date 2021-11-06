@@ -51,6 +51,3 @@ val trace : (unit -> unit) -> unit
 
 val spawn : (unit -> unit) -> unit
 (** spawn [f] as a new 'thread' *)
-
-val clear : unit -> unit
-(** clear tracing state, ready for a new run *)
