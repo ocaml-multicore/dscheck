@@ -34,9 +34,7 @@ module IntMap = Map.Make(
 let _string_of_set s =
   IntSet.fold (fun y x -> (string_of_int y) ^ "," ^ x) s ""
 
-type atomic_op = Start | Make | Get | Set | Exchange | CompareAndSwap | FetchAndAdd | Finish
-
-type trace_cell = { op : atomic_op; process_id : int; repr : Obj.t option ; enabled : IntSet.t }
+type atomic_op = Start | Make | Get | Set | Exchange | CompareAndSwap | FetchAndAdd
 
 let tracing = ref false
 
@@ -75,33 +73,23 @@ let decr r = ignore (fetch_and_add r (-1))
 (* Tracing infrastructure *)
 let processes = CCVector.create ()
 
-let current_trace = CCVector.create ()
-
-let current_process = ref 0
-let current_enabled = ref IntSet.empty
-
-let add_trace op repr_opt =
-  CCVector.push current_trace { op; process_id = !current_process; repr = repr_opt; enabled = !current_enabled }
-
-let update_process_data f =
-  let process_rec = CCVector.get processes !current_process in
-  let last_trace = CCVector.get current_trace ((CCVector.length current_trace)-1) in
+let update_process_data process_id f op repr =
+  let process_rec = CCVector.get processes process_id in
   process_rec.resume_func <- f;
-  process_rec.next_repr <- last_trace.repr;
-  process_rec.next_op <- last_trace.op
+  process_rec.next_repr <- repr;
+  process_rec.next_op <- op
 
-let finish_process () =
-  let process_rec = CCVector.get processes !current_process in
+let finish_process process_id =
+  let process_rec = CCVector.get processes process_id in
   process_rec.finished <- true;
   finished_processes := !finished_processes + 1
 
-let handler runner =
+let handler current_process_id runner =
   {
     retc =
       (fun _ ->
          (
-           add_trace Finish None;
-           finish_process ();
+           finish_process current_process_id;
            runner ()));
     exnc = (fun s -> raise s);
     effc =
@@ -111,43 +99,37 @@ let handler runner =
            Some
              (fun (k : (a, _) continuation) ->
                 let m = Atomic.make v in
-                add_trace Make (Some (Obj.repr m));
-                update_process_data (fun h -> continue_with k m h);
+                update_process_data current_process_id (fun h -> continue_with k m h) Make (Some (Obj.repr m));
                 runner ())
          | Get v ->
            Some
              (fun (k : (a, _) continuation) ->
-                add_trace Get (Some (Obj.repr v));
-                update_process_data (fun h -> continue_with k (Atomic.get v) h);
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.get v) h) Get (Some (Obj.repr v));
                 runner ())
          | Set (r, v) ->
            Some
              (fun (k : (a, _) continuation) ->
-                add_trace Set (Some (Obj.repr r));
-                update_process_data (fun h -> continue_with k (Atomic.set r v) h);
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.set r v) h) Set (Some (Obj.repr r));
                 runner ())
          | Exchange (a, b) ->
            Some
              (fun (k : (a, _) continuation) ->
-                add_trace Exchange (Some (Obj.repr a));
-                update_process_data (fun h -> continue_with k (Atomic.exchange a b) h);
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.exchange a b) h) Exchange (Some (Obj.repr a));
                 runner ())
          | CompareAndSwap (x, s, v) ->
            Some
              (fun (k : (a, _) continuation) ->
-                add_trace CompareAndSwap (Some (Obj.repr x));
-                update_process_data (fun h ->
-                    continue_with k (Atomic.compare_and_set x s v) h);
+                update_process_data current_process_id (fun h ->
+                    continue_with k (Atomic.compare_and_set x s v) h) CompareAndSwap (Some (Obj.repr x));
                 runner ())
          | FetchAndAdd (v, x) ->
            Some
              (fun (k : (a, _) continuation) ->
-                add_trace FetchAndAdd (Some (Obj.repr v));
-                update_process_data (fun h ->
-                    continue_with k (Atomic.fetch_and_add v x) h);
+                update_process_data current_process_id (fun h ->
+                    continue_with k (Atomic.fetch_and_add v x) h) FetchAndAdd (Some (Obj.repr v));
                 runner ())
          | _ ->
-           Printf.printf "Unknown on %d\n" !current_process;
+           Printf.printf "Unknown on %d\n" current_process_id;
            None);
   }
 
@@ -182,41 +164,25 @@ let do_run init_func init_schedule =
           failwith("no enabled processes")
         else
           begin
-            current_enabled := CCVector.to_seq processes
-                               |> OSeq.zip_index
-                               |> Seq.filter (fun (_,proc) -> not proc.finished)
-                               |> Seq.map (fun (id,_) -> id)
-                               |> IntSet.of_seq;
+            Printf.printf "sched: %d\n" process_id_to_run;
             let process_to_run = CCVector.get processes process_id_to_run in
-            current_process := process_id_to_run;
-            process_to_run.resume_func (handler (run_trace schedule))
+            process_to_run.resume_func (handler process_id_to_run (run_trace schedule))
           end
       end
   in
-  let progress_iterations = 1000000 in
-  let trace_counter = ref 0 in
-  let last_time = ref (Sys.time ()) in
-  let am_done = ref false in
-  while not !am_done do
-    tracing := true;
-    run_trace init_schedule ();
-    CCVector.clear current_trace;
-    CCVector.clear processes;
-    finished_processes := 0;
-    tracing := false;
-    init_func ();
-    trace_counter := !trace_counter + 1;
-    if !trace_counter mod progress_iterations == 0 then begin
-      let new_time = Sys.time () in
-      let duration = new_time -. !last_time in
-      Printf.printf "Ran %d traces (%f traces/second)\n%!" !trace_counter ((float_of_int progress_iterations) /. duration);
-      last_time := new_time
-    end
-  done;
+  tracing := true;
+  run_trace init_schedule ();
+  finished_processes := 0;
   tracing := false;
-  let trace_last = CCVector.get current_trace ((CCVector.length current_trace)-1) in
+  Printf.printf "sched len: %d\n" (List.length init_schedule);
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
-    { procs; enabled = !current_enabled; run_proc = trace_last.process_id; backtrack = IntSet.empty }
+  let current_enabled = CCVector.to_seq processes
+                        |> OSeq.zip_index
+                        |> Seq.filter (fun (_,proc) -> not proc.finished)
+                        |> Seq.map (fun (id,_) -> id)
+                        |> IntSet.of_seq in
+  CCVector.clear processes;
+  { procs; enabled = current_enabled; run_proc = last_element init_schedule; backtrack = IntSet.empty }
 
 let rec explore func state clock last_access =
   let s = last_element state in
@@ -242,15 +208,16 @@ let rec explore func state clock last_access =
       let schedule = j :: (List.map (fun s -> s.run_proc) state) in
       let statedash = (do_run func schedule) :: state in
       let statedash_len = List.length statedash in
-      let j_proc = CCVector.get processes j in
-      let new_last_access = match j_proc.next_repr with Some(ptr) -> PtrMap.add ptr statedash_len last_access | None -> last_access in
+      let j_proc = List.nth s.procs j in
+      let new_last_access = match j_proc.obj_ptr with Some(ptr) -> PtrMap.add ptr statedash_len last_access | None -> last_access in
       let new_clock = IntMap.add j statedash_len clock in
-        explore func statedash new_clock new_last_access
+      Printf.printf "dashlen: %d\n" statedash_len;
+      explore func statedash new_clock new_last_access
     done
   end
 
-  let trace func =
-    let empty_state = do_run func [0] :: [] in
-    let empty_clock = IntMap.empty in
-    let empty_last_access = PtrMap.empty in
-    explore func empty_state empty_clock empty_last_access
+let trace func =
+  let empty_state = do_run func [0] :: [] in
+  let empty_clock = IntMap.empty in
+  let empty_last_access = PtrMap.empty in
+  explore func empty_state empty_clock empty_last_access
