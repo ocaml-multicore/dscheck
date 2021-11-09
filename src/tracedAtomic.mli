@@ -51,3 +51,12 @@ val trace : (unit -> unit) -> unit
 
 val spawn : (unit -> unit) -> unit
 (** spawn [f] as a new 'thread' *)
+
+val check : (unit -> bool) -> unit
+(** if [f] returns false then an assertion has failed *)
+
+val final : (unit -> unit) -> unit
+(** run [f] after all processes complete *)
+
+val every : (unit -> unit) -> unit
+(** run [f] between every possible interleaving *)

@@ -29,6 +29,16 @@ let _string_of_set s =
 
 type atomic_op = Start | Make | Get | Set | Exchange | CompareAndSwap | FetchAndAdd
 
+let atomic_op_str x =
+  match x with
+  | Start -> "start"
+  | Make -> "make"
+  | Get -> "get"
+  | Set -> "set"
+  | Exchange -> "exchange"
+  | CompareAndSwap -> "compare_and_swap"
+  | FetchAndAdd -> "fetch_and_add"
+
 let tracing = ref false
 
 let finished_processes = ref 0
@@ -42,15 +52,18 @@ type process_data = {
   mutable finished : bool;
 }
 
+let every_func = ref (fun () -> ())
+let final_func = ref (fun () -> ())
+
 (* Atomics implementation *)
 let atomics_counter = ref 1
 
 let make v = if !tracing then perform (Make v) else
-  begin
-    let i = !atomics_counter in
-    atomics_counter := !atomics_counter + 1;
-    (Atomic.make v, i)
-  end
+    begin
+      let i = !atomics_counter in
+      atomics_counter := !atomics_counter + 1;
+      (Atomic.make v, i)
+    end
 
 let get r = if !tracing then perform (Get r) else match r with | (v,_) -> Atomic.get v
 
@@ -89,7 +102,6 @@ let handler current_process_id runner =
     retc =
       (fun _ ->
          (
-           Printf.printf "finishing process %d\n" current_process_id;
            finish_process current_process_id;
            runner ()));
     exnc = (fun s -> raise s);
@@ -132,7 +144,6 @@ let handler current_process_id runner =
                     continue_with k (Atomic.fetch_and_add v x) h) FetchAndAdd (Some i);
                 runner ())
          | _ ->
-           Printf.printf "Unknown on %d\n" current_process_id;
            None);
   }
 
@@ -152,6 +163,11 @@ let rec last_element l =
 type proc_rec = { proc_id: int; op: atomic_op; obj_ptr : int option }
 type state_cell = { procs: proc_rec list; run_proc: int; enabled : IntSet.t; mutable backtrack : IntSet.t }
 
+let num_runs = ref 0
+
+(* we stash the current state in case a check fails and we need to log it *)
+let state_for_checks = ref []
+
 let do_run init_func init_schedule =
   init_func (); (*set up run *)
   tracing := true;
@@ -159,8 +175,28 @@ let do_run init_func init_schedule =
   let num_processes = CCVector.length processes in
   (* current number of ops we are through the current run *)
   let rec run_trace s () =
+    tracing := false;
+    !every_func ();
+    tracing := true;
     match s with
-    | [] -> ()
+    | [] -> if !finished_processes == num_processes then begin
+        tracing := false;
+        Printf.printf "Running finish\n";
+        !final_func ();
+        let last_state = ref None in
+        List.iter (fun s ->
+            begin match !last_state with
+            | None -> Printf.printf "Process %d: start\n" s.run_proc
+            | Some(x) -> begin
+                let last_run_proc = List.nth x.procs s.run_proc in
+                let last_run_ptr = Option.map string_of_int last_run_proc.obj_ptr |> Option.value ~default:"" in
+                  Printf.printf "Process %d: %s %s\n" s.run_proc (atomic_op_str last_run_proc.op) last_run_ptr
+              end;
+            end;
+            last_state := (Some s)
+          ) !state_for_checks;
+        tracing := true
+      end
     | process_id_to_run :: schedule -> begin
         if !finished_processes == num_processes then
           (* this should never happen *)
@@ -176,6 +212,9 @@ let do_run init_func init_schedule =
   run_trace init_schedule ();
   finished_processes := 0;
   tracing := false;
+  num_runs := !num_runs + 1;
+  if !num_runs mod 1 == 0 then
+    Printf.printf "run: %d\n" !num_runs;
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
   let current_enabled = CCVector.to_seq processes
                         |> OSeq.zip_index
@@ -187,17 +226,13 @@ let do_run init_func init_schedule =
   { procs; enabled = current_enabled; run_proc = last_element init_schedule; backtrack = IntSet.empty }
 
 let rec explore depth func state clock last_access =
-  List.iteri (fun i s -> Printf.printf "%d: %d = %d,  backtrack: %s, enabled: %s\n" depth i s.run_proc (_string_of_set s.backtrack) (_string_of_set s.enabled)) state;
-  Printf.printf "\n";
   let s = last_element state in
   List.iter (fun proc ->
       let j = proc.proc_id in
       let i = Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access) |> Option.value ~default:0 in
       let last_hb_p = IntMap.find_opt j clock |> Option.value ~default:0 in
-      Printf.printf "%d: checking %d. i (%d) == %d, last_hb_p == %d\n" depth j (Option.value ~default:0 proc.obj_ptr) i last_hb_p;
       if i != 0 && i < last_hb_p then begin
         let pre_s = List.nth state (i-1) in
-        Printf.printf "%d: Adding %d to backtrack at %d\n" depth j (i-1);
         if IntSet.mem j pre_s.enabled then
           pre_s.backtrack <- IntSet.add j pre_s.backtrack
         else
@@ -212,6 +247,7 @@ let rec explore depth func state clock last_access =
       let j = IntSet.min_elt (IntSet.diff s.backtrack !dones) in
       dones := IntSet.add j !dones;
       let schedule = (List.map (fun s -> s.run_proc) state) @ [j] in
+      state_for_checks := state;
       let statedash = state @ [do_run func schedule] in
       let state_time = (List.length statedash)-1 in
       let j_proc = List.nth s.procs j in
@@ -220,6 +256,35 @@ let rec explore depth func state clock last_access =
       explore (depth+1) func statedash new_clock new_last_access
     done
   end
+
+let every f =
+  every_func := f
+
+let final f =
+  final_func := f
+
+let check f =
+  let tracing_at_start = !tracing in
+  tracing := false;
+  if not (f ()) then begin
+    let state = !state_for_checks in
+    Printf.printf "Found assertion violation at run %d:\n" !num_runs;
+    let last_state = ref None in
+    List.iter (fun s ->
+        begin match !last_state with
+        | None -> Printf.printf "Process %d: start\n" s.run_proc
+        | Some(x) -> begin
+            let last_run_proc = List.nth x.procs s.run_proc in
+            let last_run_ptr = Option.map string_of_int last_run_proc.obj_ptr |> Option.value ~default:"" in
+              Printf.printf "Process %d: %s %s\n" s.run_proc (atomic_op_str last_run_proc.op) last_run_ptr
+          end;
+        end;
+        last_state := (Some s)
+      ) state;
+      assert(false)
+  end;
+  tracing := tracing_at_start
+
 
 let trace func =
   let empty_state = do_run func [0] :: [] in
