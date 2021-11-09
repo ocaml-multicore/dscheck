@@ -1,28 +1,21 @@
 open EffectHandlers
 open EffectHandlers.Shallow
 
-type 'a t = 'a Atomic.t
+type 'a t = 'a Atomic.t * int
 
 type _ eff +=
-  | Make : 'a -> 'a Atomic.t eff
-  | Get : 'a Atomic.t -> 'a eff
-  | Set : ('a Atomic.t * 'a) -> unit eff
-  | Exchange : ('a Atomic.t * 'a) -> 'a eff
-  | CompareAndSwap : ('a Atomic.t * 'a * 'a) -> bool eff
-  | FetchAndAdd : (int Atomic.t * int) -> int eff
+  | Make : 'a -> 'a t eff
+  | Get : 'a t -> 'a eff
+  | Set : ('a t * 'a) -> unit eff
+  | Exchange : ('a t * 'a) -> 'a eff
+  | CompareAndSwap : ('a t * 'a * 'a) -> bool eff
+  | FetchAndAdd : (int t * int) -> int eff
 
 module IntSet = Set.Make(
   struct
     let compare = Stdlib.compare
     type t = int
   end )
-
-module PtrMap = Map.Make(
-  struct
-    type t = Obj.t
-    let compare = Stdlib.compare
-  end
-  )
 
 module IntMap = Map.Make(
   struct
@@ -43,28 +36,35 @@ let finished_processes = ref 0
 type process_data = {
   id : int;
   mutable next_op: atomic_op;
-  mutable next_repr: Obj.t option;
+  mutable next_repr: int option;
   mutable resume_func : (unit, unit) handler -> unit;
   initial_func : (unit -> unit);
   mutable finished : bool;
 }
 
 (* Atomics implementation *)
-let make v = if !tracing then perform (Make v) else Atomic.make v
+let atomics_counter = ref 1
 
-let get r = if !tracing then perform (Get r) else Atomic.get r
+let make v = if !tracing then perform (Make v) else
+  begin
+    let i = !atomics_counter in
+    atomics_counter := !atomics_counter + 1;
+    (Atomic.make v, i)
+  end
 
-let set r v = if !tracing then perform (Set (r, v)) else Atomic.set r v
+let get r = if !tracing then perform (Get r) else match r with | (v,_) -> Atomic.get v
+
+let set r v = if !tracing then perform (Set (r, v)) else match r with | (x,_) -> Atomic.set x v
 
 let exchange r v =
-  if !tracing then perform (Exchange (r, v)) else Atomic.exchange r v
+  if !tracing then perform (Exchange (r, v)) else match r with | (x,_) -> Atomic.exchange x v
 
 let compare_and_set r seen v =
   if !tracing then perform (CompareAndSwap (r, seen, v))
-  else Atomic.compare_and_set r seen v
+  else match r with | (x,_) -> Atomic.compare_and_set x seen v
 
 let fetch_and_add r n =
-  if !tracing then perform (FetchAndAdd (r, n)) else Atomic.fetch_and_add r n
+  if !tracing then perform (FetchAndAdd (r, n)) else match r with | (x,_) -> Atomic.fetch_and_add x n
 
 let incr r = ignore (fetch_and_add r 1)
 
@@ -89,6 +89,7 @@ let handler current_process_id runner =
     retc =
       (fun _ ->
          (
+           Printf.printf "finishing process %d\n" current_process_id;
            finish_process current_process_id;
            runner ()));
     exnc = (fun s -> raise s);
@@ -98,35 +99,37 @@ let handler current_process_id runner =
          | Make v ->
            Some
              (fun (k : (a, _) continuation) ->
-                let m = Atomic.make v in
-                update_process_data current_process_id (fun h -> continue_with k m h) Make (Some (Obj.repr m));
+                let i = !atomics_counter in
+                let m = (Atomic.make v, i) in
+                atomics_counter := !atomics_counter + 1;
+                update_process_data current_process_id (fun h -> continue_with k m h) Make (Some i);
                 runner ())
-         | Get v ->
+         | Get (v,i) ->
            Some
              (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h -> continue_with k (Atomic.get v) h) Get (Some (Obj.repr v));
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.get v) h) Get (Some i);
                 runner ())
-         | Set (r, v) ->
+         | Set ((r,i), v) ->
            Some
              (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h -> continue_with k (Atomic.set r v) h) Set (Some (Obj.repr r));
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.set r v) h) Set (Some i);
                 runner ())
-         | Exchange (a, b) ->
+         | Exchange ((a,i), b) ->
            Some
              (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h -> continue_with k (Atomic.exchange a b) h) Exchange (Some (Obj.repr a));
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.exchange a b) h) Exchange (Some i);
                 runner ())
-         | CompareAndSwap (x, s, v) ->
-           Some
-             (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h ->
-                    continue_with k (Atomic.compare_and_set x s v) h) CompareAndSwap (Some (Obj.repr x));
-                runner ())
-         | FetchAndAdd (v, x) ->
+         | CompareAndSwap ((x,i), s, v) ->
            Some
              (fun (k : (a, _) continuation) ->
                 update_process_data current_process_id (fun h ->
-                    continue_with k (Atomic.fetch_and_add v x) h) FetchAndAdd (Some (Obj.repr v));
+                    continue_with k (Atomic.compare_and_set x s v) h) CompareAndSwap (Some i);
+                runner ())
+         | FetchAndAdd ((v,i), x) ->
+           Some
+             (fun (k : (a, _) continuation) ->
+                update_process_data current_process_id (fun h ->
+                    continue_with k (Atomic.fetch_and_add v x) h) FetchAndAdd (Some i);
                 runner ())
          | _ ->
            Printf.printf "Unknown on %d\n" current_process_id;
@@ -146,7 +149,7 @@ let rec last_element l =
   | [] -> assert(false)
   | _ :: tl -> last_element tl
 
-type proc_rec = { proc_id: int; op: atomic_op; obj_ptr : Obj.t option }
+type proc_rec = { proc_id: int; op: atomic_op; obj_ptr : int option }
 type state_cell = { procs: proc_rec list; run_proc: int; enabled : IntSet.t; mutable backtrack : IntSet.t }
 
 let do_run init_func init_schedule =
@@ -164,7 +167,6 @@ let do_run init_func init_schedule =
           failwith("no enabled processes")
         else
           begin
-            Printf.printf "sched: %d\n" process_id_to_run;
             let process_to_run = CCVector.get processes process_id_to_run in
             process_to_run.resume_func (handler process_id_to_run (run_trace schedule))
           end
@@ -174,7 +176,6 @@ let do_run init_func init_schedule =
   run_trace init_schedule ();
   finished_processes := 0;
   tracing := false;
-  Printf.printf "sched len: %d\n" (List.length init_schedule);
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
   let current_enabled = CCVector.to_seq processes
                         |> OSeq.zip_index
@@ -182,16 +183,21 @@ let do_run init_func init_schedule =
                         |> Seq.map (fun (id,_) -> id)
                         |> IntSet.of_seq in
   CCVector.clear processes;
+  atomics_counter := 1;
   { procs; enabled = current_enabled; run_proc = last_element init_schedule; backtrack = IntSet.empty }
 
-let rec explore func state clock last_access =
+let rec explore depth func state clock last_access =
+  List.iteri (fun i s -> Printf.printf "%d: %d = %d,  backtrack: %s, enabled: %s\n" depth i s.run_proc (_string_of_set s.backtrack) (_string_of_set s.enabled)) state;
+  Printf.printf "\n";
   let s = last_element state in
   List.iter (fun proc ->
       let j = proc.proc_id in
-      let i = Option.bind proc.obj_ptr (fun ptr -> PtrMap.find_opt ptr last_access) |> Option.value ~default:0 in
+      let i = Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access) |> Option.value ~default:0 in
       let last_hb_p = IntMap.find_opt j clock |> Option.value ~default:0 in
+      Printf.printf "%d: checking %d. i (%d) == %d, last_hb_p == %d\n" depth j (Option.value ~default:0 proc.obj_ptr) i last_hb_p;
       if i != 0 && i < last_hb_p then begin
         let pre_s = List.nth state (i-1) in
+        Printf.printf "%d: Adding %d to backtrack at %d\n" depth j (i-1);
         if IntSet.mem j pre_s.enabled then
           pre_s.backtrack <- IntSet.add j pre_s.backtrack
         else
@@ -205,19 +211,18 @@ let rec explore func state clock last_access =
     while IntSet.(cardinal (diff s.backtrack !dones)) > 0 do
       let j = IntSet.min_elt (IntSet.diff s.backtrack !dones) in
       dones := IntSet.add j !dones;
-      let schedule = j :: (List.map (fun s -> s.run_proc) state) in
-      let statedash = (do_run func schedule) :: state in
-      let statedash_len = List.length statedash in
+      let schedule = (List.map (fun s -> s.run_proc) state) @ [j] in
+      let statedash = state @ [do_run func schedule] in
+      let state_time = (List.length statedash)-1 in
       let j_proc = List.nth s.procs j in
-      let new_last_access = match j_proc.obj_ptr with Some(ptr) -> PtrMap.add ptr statedash_len last_access | None -> last_access in
-      let new_clock = IntMap.add j statedash_len clock in
-      Printf.printf "dashlen: %d\n" statedash_len;
-      explore func statedash new_clock new_last_access
+      let new_last_access = match j_proc.obj_ptr with Some(ptr) -> IntMap.add ptr state_time last_access | None -> last_access in
+      let new_clock = IntMap.add j state_time clock in
+      explore (depth+1) func statedash new_clock new_last_access
     done
   end
 
 let trace func =
   let empty_state = do_run func [0] :: [] in
   let empty_clock = IntMap.empty in
-  let empty_last_access = PtrMap.empty in
-  explore func empty_state empty_clock empty_last_access
+  let empty_last_access = IntMap.empty in
+  explore 0 func empty_state empty_clock empty_last_access

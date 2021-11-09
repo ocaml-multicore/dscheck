@@ -40,4 +40,4 @@ let create_test upto () =
   done
 
 let () =
-  Atomic.trace (create_test 3)
+  Atomic.trace (create_test 4)
