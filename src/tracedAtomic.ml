@@ -225,14 +225,14 @@ let do_run init_func init_schedule =
   atomics_counter := 1;
   { procs; enabled = current_enabled; run_proc = last_element init_schedule; backtrack = IntSet.empty }
 
-let rec explore depth func state clock last_access =
+let rec explore func state clock last_access =
   let s = last_element state in
   List.iter (fun proc ->
       let j = proc.proc_id in
       let i = Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access) |> Option.value ~default:0 in
       let last_hb_p = IntMap.find_opt j clock |> Option.value ~default:0 in
       Printf.printf "Checking proc: %d, i: %d, last_hb_p: %d\n" j i last_hb_p;
-      if i != 0 && i > last_hb_p then begin
+      if i != 0 (*&& i > last_hb_p*) then begin
         let pre_s = List.nth state (i-1) in
         if IntSet.mem j pre_s.enabled then
           pre_s.backtrack <- IntSet.add j pre_s.backtrack
@@ -254,7 +254,7 @@ let rec explore depth func state clock last_access =
       let j_proc = List.nth s.procs j in
       let new_last_access = match j_proc.obj_ptr with Some(ptr) -> IntMap.add ptr state_time last_access | None -> last_access in
       let new_clock = IntMap.add j state_time clock in
-      explore (depth+1) func statedash new_clock new_last_access
+      explore func statedash new_clock new_last_access
     done
   end
 
@@ -291,4 +291,4 @@ let trace func =
   let empty_state = do_run func [0] :: [] in
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty in
-  explore 0 func empty_state empty_clock empty_last_access
+  explore func empty_state empty_clock empty_last_access
