@@ -44,4 +44,4 @@ let create_test upto () =
   )
 
 let () =
-  Atomic.trace (create_test 2)
+  Atomic.trace (create_test 8)

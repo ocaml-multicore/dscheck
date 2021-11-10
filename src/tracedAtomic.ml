@@ -161,16 +161,17 @@ let rec last_element l =
   | _ :: tl -> last_element tl
 
 type proc_rec = { proc_id: int; op: atomic_op; obj_ptr : int option }
-type state_cell = { procs: proc_rec list; run_proc: int; enabled : IntSet.t; mutable backtrack : IntSet.t }
+type state_cell = { procs: proc_rec list; run_proc: int; run_op: atomic_op; run_ptr: int option; enabled : IntSet.t; mutable backtrack : IntSet.t }
 
 let num_runs = ref 0
 
 (* we stash the current state in case a check fails and we need to log it *)
-let state_for_checks = ref []
+let schedule_for_checks = ref []
 
 let do_run init_func init_schedule =
   init_func (); (*set up run *)
   tracing := true;
+  schedule_for_checks := init_schedule;
   (* cache the number of processes in case it's expensive*)
   let num_processes = CCVector.length processes in
   (* current number of ops we are through the current run *)
@@ -181,29 +182,18 @@ let do_run init_func init_schedule =
     match s with
     | [] -> if !finished_processes == num_processes then begin
         tracing := false;
-        Printf.printf "Running finish\n";
         !final_func ();
-        let last_state = ref None in
-        List.iter (fun s ->
-            begin match !last_state with
-            | None -> Printf.printf "Process %d: start\n" s.run_proc
-            | Some(x) -> begin
-                let last_run_proc = List.nth x.procs s.run_proc in
-                let last_run_ptr = Option.map string_of_int last_run_proc.obj_ptr |> Option.value ~default:"" in
-                  Printf.printf "Process %d: %s %s\n" s.run_proc (atomic_op_str last_run_proc.op) last_run_ptr
-              end;
-            end;
-            last_state := (Some s)
-          ) !state_for_checks;
         tracing := true
       end
-    | process_id_to_run :: schedule -> begin
+    | (process_id_to_run, next_op, next_ptr) :: schedule -> begin
         if !finished_processes == num_processes then
           (* this should never happen *)
           failwith("no enabled processes")
         else
           begin
             let process_to_run = CCVector.get processes process_id_to_run in
+            assert(process_to_run.next_op = next_op);
+            assert(process_to_run.next_repr = next_ptr);
             process_to_run.resume_func (handler process_id_to_run (run_trace schedule))
           end
       end
@@ -213,7 +203,7 @@ let do_run init_func init_schedule =
   finished_processes := 0;
   tracing := false;
   num_runs := !num_runs + 1;
-  if !num_runs mod 1 == 0 then
+  if !num_runs mod 1000 == 0 then
     Printf.printf "run: %d\n" !num_runs;
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
   let current_enabled = CCVector.to_seq processes
@@ -223,16 +213,16 @@ let do_run init_func init_schedule =
                         |> IntSet.of_seq in
   CCVector.clear processes;
   atomics_counter := 1;
-  { procs; enabled = current_enabled; run_proc = last_element init_schedule; backtrack = IntSet.empty }
+  match last_element init_schedule with
+  | (run_proc, run_op, run_ptr) ->
+    { procs; enabled = current_enabled; run_proc; run_op; run_ptr; backtrack = IntSet.empty }
 
 let rec explore func state clock last_access =
   let s = last_element state in
   List.iter (fun proc ->
       let j = proc.proc_id in
       let i = Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access) |> Option.value ~default:0 in
-      let last_hb_p = IntMap.find_opt j clock |> Option.value ~default:0 in
-      Printf.printf "Checking proc: %d, i: %d, last_hb_p: %d\n" j i last_hb_p;
-      if i != 0 (*&& i > last_hb_p*) then begin
+      if i != 0 then begin
         let pre_s = List.nth state (i-1) in
         if IntSet.mem j pre_s.enabled then
           pre_s.backtrack <- IntSet.add j pre_s.backtrack
@@ -247,11 +237,10 @@ let rec explore func state clock last_access =
     while IntSet.(cardinal (diff s.backtrack !dones)) > 0 do
       let j = IntSet.min_elt (IntSet.diff s.backtrack !dones) in
       dones := IntSet.add j !dones;
-      let schedule = (List.map (fun s -> s.run_proc) state) @ [j] in
-      state_for_checks := state;
+      let j_proc = List.nth s.procs j in
+      let schedule = (List.map (fun s -> (s.run_proc, s.run_op, s.run_ptr)) state) @ [(j, j_proc.op, j_proc.obj_ptr)] in
       let statedash = state @ [do_run func schedule] in
       let state_time = (List.length statedash)-1 in
-      let j_proc = List.nth s.procs j in
       let new_last_access = match j_proc.obj_ptr with Some(ptr) -> IntMap.add ptr state_time last_access | None -> last_access in
       let new_clock = IntMap.add j state_time clock in
       explore func statedash new_clock new_last_access
@@ -268,27 +257,22 @@ let check f =
   let tracing_at_start = !tracing in
   tracing := false;
   if not (f ()) then begin
-    let state = !state_for_checks in
     Printf.printf "Found assertion violation at run %d:\n" !num_runs;
-    let last_state = ref None in
     List.iter (fun s ->
-        begin match !last_state with
-        | None -> Printf.printf "Process %d: start\n" s.run_proc
-        | Some(x) -> begin
-            let last_run_proc = List.nth x.procs s.run_proc in
-            let last_run_ptr = Option.map string_of_int last_run_proc.obj_ptr |> Option.value ~default:"" in
-              Printf.printf "Process %d: %s %s\n" s.run_proc (atomic_op_str last_run_proc.op) last_run_ptr
-          end;
+      begin match s with
+      | (last_run_proc, last_run_op, last_run_ptr) -> begin
+          let last_run_ptr = Option.map string_of_int last_run_ptr |> Option.value ~default:"" in
+            Printf.printf "Process %d: %s %s\n" last_run_proc (atomic_op_str last_run_op) last_run_ptr
         end;
-        last_state := (Some s)
-      ) state;
+      end;
+    ) !schedule_for_checks;
       assert(false)
   end;
   tracing := tracing_at_start
 
 
 let trace func =
-  let empty_state = do_run func [0] :: [] in
+  let empty_state = do_run func [(0, Start, None)] :: [] in
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty in
   explore func empty_state empty_clock empty_last_access
