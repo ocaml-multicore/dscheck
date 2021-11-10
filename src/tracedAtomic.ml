@@ -231,7 +231,8 @@ let rec explore depth func state clock last_access =
       let j = proc.proc_id in
       let i = Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access) |> Option.value ~default:0 in
       let last_hb_p = IntMap.find_opt j clock |> Option.value ~default:0 in
-      if i != 0 && i < last_hb_p then begin
+      Printf.printf "Checking proc: %d, i: %d, last_hb_p: %d\n" j i last_hb_p;
+      if i != 0 && i > last_hb_p then begin
         let pre_s = List.nth state (i-1) in
         if IntSet.mem j pre_s.enabled then
           pre_s.backtrack <- IntSet.add j pre_s.backtrack
