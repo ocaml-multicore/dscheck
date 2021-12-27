@@ -21,12 +21,12 @@ module Make(Ord: OrderedType) = struct
     let tail = { ele = Max; top_level = levels; forward = [||] } in
     let tail_forward = Array.make levels (Atomic.make ({ r = tail; mark = false })) in
     tail.forward <- tail_forward;
-    let head_forward = Array.make levels (Atomic.make ({ r = tail; mark = false })) in
+    let head_forward = Array.init levels (fun _ -> Atomic.make ({ r = tail; mark = false })) in
     let head = { ele = Min; top_level = levels; forward = head_forward } in
     { head = head; tail = tail; levels }
 
-  let find sk key preds succs =
-    let rec sk_find ~level ~pred ~curr ~succ =
+  let internal_find sk key preds succs =
+        let rec sk_find ~level ~pred ~curr ~succ =
       begin
         let curr_mref = Array.get !pred.forward level |> Atomic.get in
         curr := curr_mref.r;
@@ -69,43 +69,30 @@ module Make(Ord: OrderedType) = struct
       end
     in sk_find ~level:(sk.levels-1) ~pred:(ref sk.head) ~curr:(ref sk.head) ~succ:(ref sk.head)
 
-  let print_cell cell =
-    match cell.ele with
-    | Element({ key; _ }) ->
-      Printf.printf "Element: %s\n" (Ord.to_string key)
-    | Min -> Printf.printf "Min\n"
-    | Max -> Printf.printf "Max\n"
-
   let rec insert sk key data =
     let preds = Array.make sk.levels None in
     let succs = Array.make sk.levels None in
-    let found = find sk key preds succs in
-    for l = 0 to (sk.levels-1) do
-      Printf.printf "%d [\n" l;
-      print_cell (Array.get preds l |> Option.get);
-      print_cell (Array.get succs l |> Option.get);
-      Printf.printf "]\n"
-    done;
-    Printf.printf "\n";
+    let found = internal_find sk key preds succs in
     if found then
-      false
+      begin
+            false
+      end
     else begin
       let top_level = Random.int sk.levels in
-      Printf.printf "Inserting at %d\n" top_level;
-      let forward = Array.init (top_level+1) (fun i -> Atomic.make { r = Array.get succs i |> Option.get; mark = false }) in
+      let forward = Array.init (top_level+1)  (fun i -> Atomic.make { r = Array.get succs i |> Option.get; mark = false }) in
       let new_cell = { ele = Element({ key; data }); top_level; forward } in
       let pred = Array.get preds 0 |> Option.get in
       let pred_forward = Array.get pred.forward 0 in
-      let pref_forward_mref = Atomic.get pred_forward in
-      if not(Atomic.compare_and_set pred_forward pref_forward_mref { r = new_cell; mark = false }) then
+      let pred_forward_mref = Atomic.get pred_forward in
+      if not(Atomic.compare_and_set pred_forward pred_forward_mref { r = new_cell; mark = false }) then
         insert sk key data
       else begin
         let rec try_insert level =
           let pred = Array.get preds level |> Option.get in
           let pred_forward = Array.get pred.forward level in
-          let pref_forward_mref = Atomic.get pred_forward in
-          if not(Atomic.compare_and_set pred_forward pref_forward_mref { r = new_cell; mark = false }) then begin
-            find sk key preds succs |> ignore;
+          let pred_forward_mref = Atomic.get pred_forward in
+          if not(Atomic.compare_and_set pred_forward pred_forward_mref { r = new_cell; mark = false }) then begin
+            internal_find sk key preds succs |> ignore;
             try_insert level
           end in
         for level = 1 to top_level-1 do
@@ -115,18 +102,14 @@ module Make(Ord: OrderedType) = struct
       end
     end
 
-  let lookup sk lookup_key =
-    Printf.printf "Lookup\n";
+  let find sk lookup_key =
     let pred = ref sk.head in
     let curr = ref sk.head in
     let succ = ref sk.head in
     let level = ref (sk.levels-1) in
     while !level >= 0 do
-      Printf.printf "Lookup at level %d\n" !level;
       let curr_mref = Array.get !pred.forward !level |> Atomic.get in
       curr := curr_mref.r;
-      print_cell !curr;
-      Printf.printf "Getting level: %d. Len: %d\n" !level (Array.length !curr.forward);
       let succ_mref = Array.get !curr.forward !level |> Atomic.get in
       let is_marked = ref succ_mref.mark in
       succ := succ_mref.r;
@@ -136,30 +119,32 @@ module Make(Ord: OrderedType) = struct
         is_marked := succ_mref.mark;
         succ := succ_mref.r;
       done;
-      let curr_ele = !curr.ele in
-            match curr_ele with
-            | Element({ key = curr_key; _ }) -> begin
-                if (Ord.compare curr_key lookup_key) < 0 then begin
-                  pred := !curr;
-                  curr := !succ
-                end else
-                  decr level
-                end
-            | Max -> begin
-                pred := !curr;
-                curr := !succ;
-                decr level
-            end
-            | Min -> assert(false)
+      match !curr.ele with
+      | Element({ key = curr_key; _ }) -> begin
+        let comp = (Ord.compare curr_key lookup_key) in
+          if comp == 0 then begin
+                        level := -1 (* get us out of the loop *)
+          end else if comp < 0 then begin
+                        pred := !curr;
+            curr := !succ
+          end else decr level end
+      | Max -> decr level
+      | Min -> assert(false)
     done;
 
     let curr_ele = !curr.ele in
     match curr_ele with
     | Element({ key; data }) -> begin
       if (Ord.compare key lookup_key) == 0 then
-        Some(data)
+        data
       else
-        None
+        raise Not_found
     end
-    | Max | Min -> None
+    | Max | Min -> raise Not_found
+
+  let find_opt sk lookup_key =
+    try
+      Some(find sk lookup_key)
+    with
+      Not_found -> None
 end
