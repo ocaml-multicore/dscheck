@@ -27,7 +27,6 @@ module Make(Ord: OrderedType) = struct
 
   let internal_find sk key preds succs =
     let rec sk_find ~level ~pred ~curr ~succ =
-      Printf.printf "sk_find key:%s level:%d\n" (Ord.to_string key) level;
       begin
         let curr_mref = Array.get !pred.forward level |> Atomic.get in
         curr := curr_mref.r;
@@ -36,7 +35,6 @@ module Make(Ord: OrderedType) = struct
         succ := succ_mref.r;
         begin
           if is_marked then begin
-            let curr_mref = if curr_mref.mark then { r = curr_mref.r; mark = false } else curr_mref in
             Atomic.compare_and_set (Array.get !pred.forward level) curr_mref { r = !succ; mark = false } |> ignore;
             sk_find ~level ~pred ~curr ~succ
           end else begin
