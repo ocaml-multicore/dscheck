@@ -4,14 +4,21 @@ let to_string = string_of_int
 end)
 
 let () =
+  let num_nodes = 5 in
   let sm = Lfsm.make 12 in
-    for i = 0 to 1000 do
+    Printf.printf "inserting..\n";
+    for i = 0 to num_nodes do
       begin
         assert(Lfsm.insert sm i (string_of_int i));
       end
     done;
-    for _ = 1 to 100000 do
-      for i = 1000 downto 0 do
+    Printf.printf "finding..\n";
+    for _ = 1 to 2 do
+      for i = num_nodes downto 0 do
         Lfsm.find sm i |> ignore
       done
+    done;
+    Printf.printf "removing..\n";
+    for i = 0 to num_nodes do
+      assert(Lfsm.remove sm i)
     done

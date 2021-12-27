@@ -26,7 +26,8 @@ module Make(Ord: OrderedType) = struct
     { head = head; tail = tail; levels }
 
   let internal_find sk key preds succs =
-        let rec sk_find ~level ~pred ~curr ~succ =
+    let rec sk_find ~level ~pred ~curr ~succ =
+      Printf.printf "sk_find key:%s level:%d\n" (Ord.to_string key) level;
       begin
         let curr_mref = Array.get !pred.forward level |> Atomic.get in
         curr := curr_mref.r;
@@ -75,7 +76,7 @@ module Make(Ord: OrderedType) = struct
     let found = internal_find sk key preds succs in
     if found then
       begin
-            false
+        false
       end
     else begin
       let top_level = Random.int sk.levels in
@@ -121,11 +122,9 @@ module Make(Ord: OrderedType) = struct
       done;
       match !curr.ele with
       | Element({ key = curr_key; _ }) -> begin
-        let comp = (Ord.compare curr_key lookup_key) in
-          if comp == 0 then begin
-                        level := -1 (* get us out of the loop *)
-          end else if comp < 0 then begin
-                        pred := !curr;
+          let comp = (Ord.compare curr_key lookup_key) in
+          if comp < 0 then begin
+            pred := !curr;
             curr := !succ
           end else decr level end
       | Max -> decr level
@@ -135,11 +134,11 @@ module Make(Ord: OrderedType) = struct
     let curr_ele = !curr.ele in
     match curr_ele with
     | Element({ key; data }) -> begin
-      if (Ord.compare key lookup_key) == 0 then
-        data
-      else
-        raise Not_found
-    end
+        if (Ord.compare key lookup_key) == 0 then
+          data
+        else
+          raise Not_found
+      end
     | Max | Min -> raise Not_found
 
   let find_opt sk lookup_key =
@@ -147,4 +146,45 @@ module Make(Ord: OrderedType) = struct
       Some(find sk lookup_key)
     with
       Not_found -> None
+
+  let remove sk key =
+    let preds = Array.make sk.levels None in
+    let succs = Array.make sk.levels None in
+    let found = internal_find sk key preds succs in
+    if not found then
+      false
+    else begin
+      let to_remove = Array.get succs 0 |> Option.get in
+      for level = to_remove.top_level-1 downto 1 do
+        let rec try_mark () =
+          let atomic_mref = Array.get to_remove.forward level in
+          let mref = Atomic.get atomic_mref in
+          let succ = mref.r in
+          let marked = mref.mark in
+          if marked then begin
+            if not(Atomic.compare_and_set atomic_mref mref { r = succ ; mark = true }) then
+              try_mark ()
+            else
+              ()
+          end
+        in try_mark ()
+      done;
+      let rec try_lowest () =
+        let atomic_mref = Array.get to_remove.forward 0 in
+        let mref = Atomic.get atomic_mref in
+        let succ = mref.r in
+        let marked = mref.mark in
+        let mark_success = Atomic.compare_and_set atomic_mref mref { r = succ ; mark = true } in
+        if mark_success then
+          begin
+            internal_find sk key preds succs |> ignore;
+            true
+          end
+        else if marked then
+          false
+        else
+          try_lowest ()
+      in
+      try_lowest ()
+    end
 end
