@@ -1,3 +1,4 @@
+module Atomic = TracedAtomic
 module type OrderedType =
 sig
   type t
@@ -15,7 +16,21 @@ module Make(Ord: OrderedType) = struct
 
   type 'a cell = { ele:'a ele; top_level: int; mutable forward: 'a cell marked_ref Atomic.t array }
 
-  type 'a t = { head: 'a cell; tail: 'a cell; levels: int }
+  type 'a t = { head: 'a cell; tail: 'a cell; levels: int; random_state: int Atomic.t }
+
+  let rec random_level sk =
+    let level = ref 0 in
+    let curr = Atomic.get sk.random_state in
+    let next_state = (curr * 69069 + 25173) in
+    if Atomic.compare_and_set sk.random_state curr next_state then begin
+      let r = ref (next_state mod (Int.shift_left 2 sk.levels)) in
+        while !r land 3 = 3 do
+          incr level;
+          r := Int.shift_right !r 2
+        done;
+        !level
+    end else
+      random_level sk
 
   let make levels =
     let tail = { ele = Max; top_level = levels; forward = [||] } in
@@ -23,7 +38,7 @@ module Make(Ord: OrderedType) = struct
     tail.forward <- tail_forward;
     let head_forward = Array.init levels (fun _ -> Atomic.make ({ r = tail; mark = false })) in
     let head = { ele = Min; top_level = levels; forward = head_forward } in
-    { head = head; tail = tail; levels }
+    { head = head; tail = tail; levels; random_state = Atomic.make 0 }
 
   let internal_find sk key preds succs =
     let rec sk_find ~level ~pred ~curr ~succ =
@@ -77,7 +92,7 @@ module Make(Ord: OrderedType) = struct
         false
       end
     else begin
-      let top_level = Random.int sk.levels in
+      let top_level = random_level sk in
       let forward = Array.init (top_level+1)  (fun i -> Atomic.make { r = Array.get succs i |> Option.get; mark = false }) in
       let new_cell = { ele = Element({ key; data }); top_level; forward } in
       let pred = Array.get preds 0 |> Option.get in

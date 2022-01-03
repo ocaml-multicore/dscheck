@@ -192,7 +192,18 @@ let do_run init_func init_schedule =
         else
           begin
             let process_to_run = CCVector.get processes process_id_to_run in
-            assert(process_to_run.next_op = next_op);
+            if process_to_run.next_op != next_op then begin
+              Printf.printf "Process to run: %d, next_op: %s but next_op was %s\n" process_id_to_run (atomic_op_str process_to_run.next_op) (atomic_op_str next_op);
+              List.iter (fun s ->
+                begin match s with
+                | (last_run_proc, last_run_op, last_run_ptr) -> begin
+                    let last_run_ptr = Option.map string_of_int last_run_ptr |> Option.value ~default:"" in
+                      Printf.printf "Process %d: %s %s\n" last_run_proc (atomic_op_str last_run_op) last_run_ptr
+                  end;
+                end;
+              ) init_schedule;
+              assert(process_to_run.next_op = next_op)
+            end;
             assert(process_to_run.next_repr = next_ptr);
             process_to_run.resume_func (handler process_id_to_run (run_trace schedule))
           end
@@ -203,8 +214,8 @@ let do_run init_func init_schedule =
   finished_processes := 0;
   tracing := false;
   num_runs := !num_runs + 1;
-  if !num_runs mod 1000 == 0 then
-    Printf.printf "run: %d\n" !num_runs;
+  if !num_runs mod 100000 == 0 then
+    Printf.printf "run: %d\n%!" !num_runs;
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
   let current_enabled = CCVector.to_seq processes
                         |> OSeq.zip_index

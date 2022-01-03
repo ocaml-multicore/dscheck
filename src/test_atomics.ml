@@ -3,24 +3,15 @@ module Lfsm = Lf_skipmap.Make(struct type t = int
     let to_string = string_of_int
   end)
 
+let insert_and_check sm n () =
+  assert(Lfsm.insert sm n "Nothing");
+  assert(Lfsm.remove sm n)
+
+let create_test upto () =
+  let lfsm = Lfsm.make 3 in
+    for x = 0 to (upto-1) do
+      TracedAtomic.spawn(insert_and_check lfsm x)
+    done
+
 let () =
-  for _ = 0 to 99 do
-    let num_nodes = 1000 in
-    let sm = Lfsm.make 12 in
-    Printf.printf "inserting..\n";
-    for i = 0 to num_nodes do
-      begin
-        assert(Lfsm.insert sm i (string_of_int i));
-      end
-    done;
-    Printf.printf "finding..\n";
-    for _ = 1 to 200 do
-      for i = num_nodes downto 0 do
-        Lfsm.find sm i |> ignore
-      done
-    done;
-    Printf.printf "removing..\n";
-    for i = 0 to num_nodes do
-      assert(Lfsm.remove sm i)
-    done;
-  done
+  TracedAtomic.trace(create_test 2)
