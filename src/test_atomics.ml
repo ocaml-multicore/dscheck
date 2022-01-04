@@ -8,7 +8,7 @@ let insert_and_check sm n () =
   assert(Lfsm.remove sm n)
 
 let create_test upto () =
-  let lfsm = Lfsm.make 3 in
+  let lfsm = Lfsm.make 2 in
     for x = 0 to (upto-1) do
       TracedAtomic.spawn(insert_and_check lfsm x)
     done

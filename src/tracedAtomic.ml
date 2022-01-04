@@ -39,6 +39,16 @@ let atomic_op_str x =
   | CompareAndSwap -> "compare_and_swap"
   | FetchAndAdd -> "fetch_and_add"
 
+let print_schedule sched =
+  List.iter (fun s ->
+    begin match s with
+    | (last_run_proc, last_run_op, last_run_ptr) -> begin
+        let last_run_ptr = Option.map string_of_int last_run_ptr |> Option.value ~default:"" in
+          Printf.printf "Process %d: %s %s\n" last_run_proc (atomic_op_str last_run_op) last_run_ptr
+      end;
+    end;
+  ) sched
+
 let tracing = ref false
 
 let finished_processes = ref 0
@@ -214,8 +224,11 @@ let do_run init_func init_schedule =
   finished_processes := 0;
   tracing := false;
   num_runs := !num_runs + 1;
-  if !num_runs mod 100000 == 0 then
+  if !num_runs mod 100000 == 0 then begin
     Printf.printf "run: %d\n%!" !num_runs;
+    print_schedule init_schedule;
+    Gc.print_stat stdout
+  end;
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
   let current_enabled = CCVector.to_seq processes
                         |> OSeq.zip_index
@@ -269,15 +282,8 @@ let check f =
   tracing := false;
   if not (f ()) then begin
     Printf.printf "Found assertion violation at run %d:\n" !num_runs;
-    List.iter (fun s ->
-      begin match s with
-      | (last_run_proc, last_run_op, last_run_ptr) -> begin
-          let last_run_ptr = Option.map string_of_int last_run_ptr |> Option.value ~default:"" in
-            Printf.printf "Process %d: %s %s\n" last_run_proc (atomic_op_str last_run_op) last_run_ptr
-        end;
-      end;
-    ) !schedule_for_checks;
-      assert(false)
+    print_schedule !schedule_for_checks;
+    assert(false)
   end;
   tracing := tracing_at_start
 
