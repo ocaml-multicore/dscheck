@@ -1,6 +1,8 @@
 open EffectHandlers
 open EffectHandlers.Shallow
 
+exception AbortedException
+
 type 'a t = 'a Atomic.t * int
 
 type _ eff +=
@@ -41,15 +43,16 @@ let atomic_op_str x =
 
 let print_schedule sched =
   List.iter (fun s ->
-    begin match s with
-    | (last_run_proc, last_run_op, last_run_ptr) -> begin
-        let last_run_ptr = Option.map string_of_int last_run_ptr |> Option.value ~default:"" in
-          Printf.printf "Process %d: %s %s\n" last_run_proc (atomic_op_str last_run_op) last_run_ptr
+      begin match s with
+        | (last_run_proc, last_run_op, last_run_ptr) -> begin
+            let last_run_ptr = Option.map string_of_int last_run_ptr |> Option.value ~default:"" in
+            Printf.printf "Process %d: %s %s\n%!" last_run_proc (atomic_op_str last_run_op) last_run_ptr
+          end;
       end;
-    end;
-  ) sched
+    ) sched
 
 let tracing = ref false
+let verbose_logging = ref false
 
 let finished_processes = ref 0
 
@@ -58,6 +61,7 @@ type process_data = {
   mutable next_op: atomic_op;
   mutable next_repr: int option;
   mutable resume_func : (unit, unit) handler -> unit;
+  mutable discontinue_func: (unit, unit) handler -> unit;
   initial_func : (unit -> unit);
   mutable finished : bool;
 }
@@ -96,9 +100,10 @@ let decr r = ignore (fetch_and_add r (-1))
 (* Tracing infrastructure *)
 let processes = CCVector.create ()
 
-let update_process_data process_id f op repr =
+let update_process_data process_id resume discontinue op repr =
   let process_rec = CCVector.get processes process_id in
-  process_rec.resume_func <- f;
+  process_rec.resume_func <- resume;
+  process_rec.discontinue_func <- discontinue;
   process_rec.next_repr <- repr;
   process_rec.next_op <- op
 
@@ -107,14 +112,32 @@ let finish_process process_id =
   process_rec.finished <- true;
   finished_processes := !finished_processes + 1
 
-let handler current_process_id runner =
+let discontinue_handler =
+  { retc = (fun () -> ());
+    exnc = (fun _ -> ());
+    effc = (fun _ -> None)
+  }
+
+let log_backtrace process_id c atomic_i op =
+  let cs = get_callstack c 5 in
+    Printf.printf "Process %d: %s %d:\n" process_id (atomic_op_str op) atomic_i;
+    Printexc.print_raw_backtrace stdout cs;
+    Printf.printf "\n"
+
+let resume_handler current_process_id init_schedule runner =
   {
     retc =
       (fun _ ->
          (
            finish_process current_process_id;
            runner ()));
-    exnc = (fun s -> raise s);
+    exnc = (fun s ->
+        if not !verbose_logging then begin
+          Printf.printf "Schedule: %d length\n%!" (List.length init_schedule);
+          print_schedule init_schedule
+        end;
+        Printf.printf "Process %d raised\n" current_process_id;
+        raise s);
     effc =
       (fun (type a) (e : a eff) ->
          match e with
@@ -124,34 +147,40 @@ let handler current_process_id runner =
                 let i = !atomics_counter in
                 let m = (Atomic.make v, i) in
                 atomics_counter := !atomics_counter + 1;
-                update_process_data current_process_id (fun h -> continue_with k m h) Make (Some i);
+                if !verbose_logging then log_backtrace current_process_id k i Make;
+                update_process_data current_process_id (fun h -> continue_with k m h) (fun h -> discontinue_with k AbortedException h) Make (Some i);
                 runner ())
          | Get (v,i) ->
            Some
              (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h -> continue_with k (Atomic.get v) h) Get (Some i);
+                if !verbose_logging then log_backtrace current_process_id k i Get;
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.get v) h) (fun h -> discontinue_with k AbortedException h) Get (Some i);
                 runner ())
          | Set ((r,i), v) ->
            Some
              (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h -> continue_with k (Atomic.set r v) h) Set (Some i);
+                if !verbose_logging then log_backtrace current_process_id k i Set;
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.set r v) h) (fun h -> discontinue_with k AbortedException h) Set (Some i);
                 runner ())
          | Exchange ((a,i), b) ->
            Some
              (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h -> continue_with k (Atomic.exchange a b) h) Exchange (Some i);
+                if !verbose_logging then log_backtrace current_process_id k i Exchange;
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.exchange a b) h) (fun h -> discontinue_with k AbortedException h) Exchange (Some i);
                 runner ())
          | CompareAndSwap ((x,i), s, v) ->
            Some
              (fun (k : (a, _) continuation) ->
+                if !verbose_logging then log_backtrace current_process_id k i CompareAndSwap;
                 update_process_data current_process_id (fun h ->
-                    continue_with k (Atomic.compare_and_set x s v) h) CompareAndSwap (Some i);
+                    continue_with k (Atomic.compare_and_set x s v) h) (fun h -> discontinue_with k AbortedException h) CompareAndSwap (Some i);
                 runner ())
          | FetchAndAdd ((v,i), x) ->
            Some
              (fun (k : (a, _) continuation) ->
+                if !verbose_logging then log_backtrace current_process_id k i FetchAndAdd;
                 update_process_data current_process_id (fun h ->
-                    continue_with k (Atomic.fetch_and_add v x) h) FetchAndAdd (Some i);
+                    continue_with k (Atomic.fetch_and_add v x) h) (fun h -> discontinue_with k AbortedException h) FetchAndAdd (Some i);
                 runner ())
          | _ ->
            None);
@@ -159,10 +188,13 @@ let handler current_process_id runner =
 
 let spawn f =
   let new_id = CCVector.length processes in
-  let fiber_f h =
-    continue_with (fiber f) () h in
+  let fiber_f = fiber f in
+  let resume_func h =
+    continue_with fiber_f () h in
+  let discontinue_func h =
+    discontinue_with fiber_f AbortedException h in
   CCVector.push processes
-    { id = new_id; next_op = Start; next_repr = None; resume_func = fiber_f; initial_func = f; finished = false }
+    { id = new_id; next_op = Start; next_repr = None; resume_func = resume_func; discontinue_func = discontinue_func; initial_func = f; finished = false }
 
 let rec last_element l =
   match l with
@@ -182,7 +214,6 @@ let do_run init_func init_schedule =
   init_func (); (*set up run *)
   tracing := true;
   schedule_for_checks := init_schedule;
-  (* cache the number of processes in case it's expensive*)
   let num_processes = CCVector.length processes in
   (* current number of ops we are through the current run *)
   let rec run_trace s () =
@@ -204,30 +235,35 @@ let do_run init_func init_schedule =
             let process_to_run = CCVector.get processes process_id_to_run in
             if process_to_run.next_op != next_op then begin
               Printf.printf "Process to run: %d, next_op: %s but next_op was %s\n" process_id_to_run (atomic_op_str process_to_run.next_op) (atomic_op_str next_op);
-              List.iter (fun s ->
-                begin match s with
-                | (last_run_proc, last_run_op, last_run_ptr) -> begin
-                    let last_run_ptr = Option.map string_of_int last_run_ptr |> Option.value ~default:"" in
-                      Printf.printf "Process %d: %s %s\n" last_run_proc (atomic_op_str last_run_op) last_run_ptr
-                  end;
-                end;
-              ) init_schedule;
+              print_schedule init_schedule;
               assert(process_to_run.next_op = next_op)
             end;
             assert(process_to_run.next_repr = next_ptr);
-            process_to_run.resume_func (handler process_id_to_run (run_trace schedule))
+            process_to_run.resume_func (resume_handler process_id_to_run init_schedule (run_trace schedule))
           end
       end
   in
   tracing := true;
-  run_trace init_schedule ();
+  begin
+    try
+      run_trace init_schedule ();
+    with Failure _ -> begin
+        (* got an exception, re-run the schedule but with more detaied logging *)
+        finished_processes := 0;
+        CCVector.clear processes;
+        atomics_counter := 1;
+        verbose_logging := true;
+        tracing := false;
+        init_func ();
+        tracing := true;
+        run_trace init_schedule ();
+      end;
+  end;
   finished_processes := 0;
   tracing := false;
   num_runs := !num_runs + 1;
   if !num_runs mod 100000 == 0 then begin
-    Printf.printf "run: %d\n%!" !num_runs;
-    print_schedule init_schedule;
-    Gc.print_stat stdout
+    Printf.printf "run: %d\n%!" !num_runs
   end;
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
   let current_enabled = CCVector.to_seq processes
@@ -235,6 +271,11 @@ let do_run init_func init_schedule =
                         |> Seq.filter (fun (_,proc) -> not proc.finished)
                         |> Seq.map (fun (id,_) -> id)
                         |> IntSet.of_seq in
+  (* dispose of all the existing fibers *)
+  CCVector.iter (fun proc ->
+      if not proc.finished then
+        proc.discontinue_func discontinue_handler
+    ) processes;
   CCVector.clear processes;
   atomics_counter := 1;
   match last_element init_schedule with

@@ -24,11 +24,11 @@ module Make(Ord: OrderedType) = struct
     let next_state = (curr * 69069 + 25173) in
     if Atomic.compare_and_set sk.random_state curr next_state then begin
       let r = ref (next_state mod (Int.shift_left 2 sk.levels)) in
-        while !r land 3 = 3 do
-          incr level;
-          r := Int.shift_right !r 2
-        done;
-        !level
+      while !r land 3 = 3 do
+        incr level;
+        r := Int.shift_right !r 2
+      done;
+      !level
     end else
       random_level sk
 
@@ -186,17 +186,19 @@ module Make(Ord: OrderedType) = struct
         let atomic_mref = Array.get to_remove.forward 0 in
         let mref = Atomic.get atomic_mref in
         let succ = mref.r in
-        let marked = mref.mark in
         let mark_success = Atomic.compare_and_set atomic_mref mref { r = succ ; mark = true } in
         if mark_success then
           begin
             internal_find sk key preds succs |> ignore;
             true
           end
-        else if marked then
-          false
-        else
-          try_lowest ()
+        else begin
+          let mref = Atomic.get atomic_mref in
+          if mref.mark then
+            false
+          else
+            try_lowest ()
+        end
       in
       try_lowest ()
     end
