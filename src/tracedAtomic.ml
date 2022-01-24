@@ -122,7 +122,7 @@ let log_backtrace process_id c atomic_i op =
   let cs = get_callstack c 5 in
     Printf.printf "Process %d: %s %d:\n" process_id (atomic_op_str op) atomic_i;
     Printexc.print_raw_backtrace stdout cs;
-    Printf.printf "\n"
+    Printf.printf "\n%!"
 
 let resume_handler current_process_id init_schedule runner =
   {
@@ -136,7 +136,7 @@ let resume_handler current_process_id init_schedule runner =
           Printf.printf "Schedule: %d length\n%!" (List.length init_schedule);
           print_schedule init_schedule
         end;
-        Printf.printf "Process %d raised\n" current_process_id;
+        Printf.printf "Process %d raised %s\n" current_process_id (Printexc.to_string s);
         raise s);
     effc =
       (fun (type a) (e : a eff) ->

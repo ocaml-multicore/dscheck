@@ -88,9 +88,7 @@ module Make(Ord: OrderedType) = struct
     let succs = Array.make sk.levels None in
     let found = internal_find sk key preds succs in
     if found then
-      begin
-        false
-      end
+      false
     else begin
       let top_level = random_level sk in
       let forward = Array.init (top_level+1)  (fun i -> Atomic.make { r = Array.get succs i |> Option.get; mark = false }) in
@@ -98,7 +96,7 @@ module Make(Ord: OrderedType) = struct
       let pred = Array.get preds 0 |> Option.get in
       let pred_forward = Array.get pred.forward 0 in
       let pred_forward_mref = Atomic.get pred_forward in
-      if not(Atomic.compare_and_set pred_forward pred_forward_mref { r = new_cell; mark = false }) then
+      if pred_forward_mref.mark || not(Atomic.compare_and_set pred_forward pred_forward_mref { r = new_cell; mark = false }) then
         insert sk key data
       else begin
         let rec try_insert level =
@@ -160,6 +158,21 @@ module Make(Ord: OrderedType) = struct
     with
       Not_found -> None
 
+  let dump_state sk =
+    Printf.printf "Skipmap state:\n";
+    for l = 0 to (sk.levels-1) do
+      let rec walk_nodes n =
+        Printf.printf "%d key: %s\n" l (match n.ele with Element({key;_}) -> (Ord.to_string key) | Min -> "Head\n" | Max -> "Tail\n");
+        match n with
+        | v when v == sk.tail -> ()
+        | v -> begin
+          let next_at_level_mref = (Array.get v.forward l |> Atomic.get) in
+            walk_nodes next_at_level_mref.r
+        end in
+          walk_nodes sk.head
+    done;
+    Printf.printf "%!"
+
   let remove sk key =
     let preds = Array.make sk.levels None in
     let succs = Array.make sk.levels None in
@@ -194,7 +207,7 @@ module Make(Ord: OrderedType) = struct
           end
         else begin
           let mref = Atomic.get atomic_mref in
-          if mref.mark then
+          if mref.r == succ && mref.mark then
             false
           else
             try_lowest ()
