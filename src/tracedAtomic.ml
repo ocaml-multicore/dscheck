@@ -1,15 +1,15 @@
-open EffectHandlers
-open EffectHandlers.Shallow
+open Effect
+open Effect.Shallow
 
 type 'a t = 'a Atomic.t * int
 
-type _ eff +=
-  | Make : 'a -> 'a t eff
-  | Get : 'a t -> 'a eff
-  | Set : ('a t * 'a) -> unit eff
-  | Exchange : ('a t * 'a) -> 'a eff
-  | CompareAndSwap : ('a t * 'a * 'a) -> bool eff
-  | FetchAndAdd : (int t * int) -> int eff
+type _ Effect.t +=
+  | Make : 'a -> 'a t Effect.t
+  | Get : 'a t -> 'a Effect.t
+  | Set : ('a t * 'a) -> unit Effect.t
+  | Exchange : ('a t * 'a) -> 'a Effect.t
+  | CompareAndSwap : ('a t * 'a * 'a) -> bool Effect.t
+  | FetchAndAdd : (int t * int) -> int Effect.t
 
 module IntSet = Set.Make(
   struct
@@ -106,7 +106,7 @@ let handler current_process_id runner =
            runner ()));
     exnc = (fun s -> raise s);
     effc =
-      (fun (type a) (e : a eff) ->
+      (fun (type a) (e : a Effect.t) ->
          match e with
          | Make v ->
            Some
