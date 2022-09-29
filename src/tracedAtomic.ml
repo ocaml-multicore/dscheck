@@ -44,11 +44,9 @@ let tracing = ref false
 let finished_processes = ref 0
 
 type process_data = {
-  id : int;
   mutable next_op: atomic_op;
   mutable next_repr: int option;
   mutable resume_func : (unit, unit) handler -> unit;
-  initial_func : (unit -> unit);
   mutable finished : bool;
 }
 
@@ -148,11 +146,10 @@ let handler current_process_id runner =
   }
 
 let spawn f =
-  let new_id = CCVector.length processes in
   let fiber_f h =
     continue_with (fiber f) () h in
   CCVector.push processes
-    { id = new_id; next_op = Start; next_repr = None; resume_func = fiber_f; initial_func = f; finished = false }
+    { next_op = Start; next_repr = None; resume_func = fiber_f; finished = false }
 
 let rec last_element l =
   match l with
