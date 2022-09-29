@@ -1,3 +1,3 @@
-(executable
- (libraries containers oseq)
- (name test_atomics))
+(library
+  (public_name dscheck)
+  (libraries containers oseq))
