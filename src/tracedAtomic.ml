@@ -275,8 +275,8 @@ let rec explore func time state current_schedule clock (last_read, last_write) =
       let add ptr map =
         IntMap.update
           ptr
-          (function None -> Some [time, step.run_proc]
-           | Some steps -> Some ((time, step.run_proc) :: steps))
+          (function None -> Some [new_time, step.run_proc]
+           | Some steps -> Some ((new_time, step.run_proc) :: steps))
           map
       in
       let new_last_access =
