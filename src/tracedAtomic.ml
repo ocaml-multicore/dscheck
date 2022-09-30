@@ -164,8 +164,10 @@ let setup_run func init_schedule =
   CCVector.clear processes;
   schedule_for_checks := init_schedule;
   func () ;
+  finished_processes := 0;
   num_runs := !num_runs + 1;
-  finished_processes := 0
+  if !num_runs mod 1000 == 0 then
+    Printf.printf "run: %d\n" !num_runs
 
 let do_run init_schedule =
   (* cache the number of processes in case it's expensive*)
@@ -197,8 +199,6 @@ let do_run init_schedule =
   tracing := true;
   run_trace (List.rev init_schedule) ();
   tracing := false;
-  if !num_runs mod 1000 == 0 then
-    Printf.printf "run: %d\n" !num_runs;
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
   let current_enabled = CCVector.to_seq processes
                         |> OSeq.zip_index
