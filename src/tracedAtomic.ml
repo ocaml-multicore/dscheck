@@ -208,18 +208,42 @@ let do_run init_schedule =
   let (run_proc, run_op, run_ptr) = List.hd init_schedule in
   { procs; enabled = current_enabled; run_proc; run_op; run_ptr; backtrack = IntSet.empty }
 
-let rec explore func time state current_schedule clock last_access =
+type category =
+  | Ignore
+  | Read
+  | Write
+  | Read_write
+
+let categorize = function
+  | Start | Make -> Ignore
+  | Get -> Read
+  | Set | Exchange -> Write
+  | CompareAndSwap | FetchAndAdd -> Read_write
+
+let rec explore func time state current_schedule clock (last_read, last_write) =
   let s = List.hd state in
   List.iter (fun proc ->
       let j = proc.proc_id in
-      let i = Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access) |> Option.value ~default:0 in
-      if i != 0 then begin
+      let find ptr map = match IntMap.find_opt ptr map with
+        | None -> None
+        | Some lst ->
+            List.find_opt (fun (_, proc_id) -> proc_id <> j) lst
+      in
+      let i = match categorize proc.op, proc.obj_ptr with
+        | Ignore, _ -> None
+        | Read, Some ptr -> find ptr last_write
+        | Write, Some ptr -> find ptr last_read
+        | Read_write, Some ptr -> max (find ptr last_read) (find ptr last_write)
+        | _ -> assert false
+      in
+      match i with
+      | None -> ()
+      | Some (i, _) ->
         let pre_s = List.nth state (time - i + 1) in
         if IntSet.mem j pre_s.enabled then
           pre_s.backtrack <- IntSet.add j pre_s.backtrack
         else
           pre_s.backtrack <- IntSet.union pre_s.backtrack pre_s.enabled
-      end
     ) s.procs;
   if IntSet.cardinal s.enabled > 0 then begin
     let p = IntSet.min_elt s.enabled in
@@ -244,11 +268,25 @@ let rec explore func time state current_schedule clock last_access =
           [new_step]
         end
       in
-      let s = do_run schedule in
-      let new_state = s :: state in
-      let new_schedule = (s.run_proc, s.run_op, s.run_ptr) :: current_schedule in
+      let step = do_run schedule in
+      let new_state = step :: state in
+      let new_schedule = (step.run_proc, step.run_op, step.run_ptr) :: current_schedule in
       let new_time = time + 1 in
-      let new_last_access = match j_proc.obj_ptr with Some(ptr) -> IntMap.add ptr new_time last_access | None -> last_access in
+      let add ptr map =
+        IntMap.update
+          ptr
+          (function None -> Some [time, step.run_proc]
+           | Some steps -> Some ((time, step.run_proc) :: steps))
+          map
+      in
+      let new_last_access =
+        match categorize step.run_op, step.run_ptr with
+        | Ignore, _ -> last_read, last_write
+        | Read, Some ptr -> add ptr last_read, last_write
+        | Write, Some ptr -> last_read, add ptr last_write
+        | Read_write, Some ptr -> add ptr last_read, add ptr last_write
+        | _ -> assert false
+      in
       let new_clock = IntMap.add j new_time clock in
       explore func new_time new_state new_schedule new_clock new_last_access
     done
@@ -283,6 +321,6 @@ let trace func =
   setup_run func empty_schedule ;
   let empty_state = do_run empty_schedule :: [] in
   let empty_clock = IntMap.empty in
-  let empty_last_access = IntMap.empty in
+  let empty_last_access = IntMap.empty, IntMap.empty in
   explore func 1 empty_state empty_schedule empty_clock empty_last_access ;
   Printf.printf "Finished after %i runs.\n%!" !num_runs
