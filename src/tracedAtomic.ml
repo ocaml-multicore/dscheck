@@ -165,10 +165,15 @@ let num_runs = ref 0
 (* we stash the current state in case a check fails and we need to log it *)
 let schedule_for_checks = ref []
 
-let do_run init_func init_schedule =
-  init_func (); (*set up run *)
-  tracing := true;
+let setup_run func init_schedule =
+  atomics_counter := 1;
+  CCVector.clear processes;
   schedule_for_checks := init_schedule;
+  func () ;
+  num_runs := !num_runs + 1;
+  finished_processes := 0
+
+let do_run init_schedule =
   (* cache the number of processes in case it's expensive*)
   let num_processes = CCVector.length processes in
   (* current number of ops we are through the current run *)
@@ -197,9 +202,7 @@ let do_run init_func init_schedule =
   in
   tracing := true;
   run_trace init_schedule ();
-  finished_processes := 0;
   tracing := false;
-  num_runs := !num_runs + 1;
   if !num_runs mod 1000 == 0 then
     Printf.printf "run: %d\n%!" !num_runs;
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
@@ -208,8 +211,6 @@ let do_run init_func init_schedule =
                         |> Seq.filter (fun (_,proc) -> not proc.finished)
                         |> Seq.map (fun (id,_) -> id)
                         |> IntSet.of_seq in
-  CCVector.clear processes;
-  atomics_counter := 1;
   match last_element init_schedule with
   | (run_proc, run_op, run_ptr) ->
     { procs; enabled = current_enabled; run_proc; run_op; run_ptr; backtrack = IntSet.empty }
@@ -231,12 +232,26 @@ let rec explore func state clock last_access =
     let p = IntSet.min_elt s.enabled in
     let dones = ref IntSet.empty in
     s.backtrack <- IntSet.singleton p;
+    let is_backtracking = ref false in
     while IntSet.(cardinal (diff s.backtrack !dones)) > 0 do
       let j = IntSet.min_elt (IntSet.diff s.backtrack !dones) in
       dones := IntSet.add j !dones;
       let j_proc = List.nth s.procs j in
-      let schedule = (List.map (fun s -> (s.run_proc, s.run_op, s.run_ptr)) state) @ [(j, j_proc.op, j_proc.obj_ptr)] in
-      let statedash = state @ [do_run func schedule] in
+      let new_step = [(j, j_proc.op, j_proc.obj_ptr)] in
+      let full_schedule = List.map (fun s -> (s.run_proc, s.run_op, s.run_ptr)) state @ new_step in
+      let schedule =
+        if !is_backtracking
+        then begin
+          setup_run func full_schedule ;
+          full_schedule
+        end
+        else begin
+          is_backtracking := true ;
+          schedule_for_checks := full_schedule;
+          new_step
+        end
+      in
+      let statedash = state @ [do_run schedule] in
       let state_time = (List.length statedash)-1 in
       let new_last_access = match j_proc.obj_ptr with Some(ptr) -> IntMap.add ptr state_time last_access | None -> last_access in
       let new_clock = IntMap.add j state_time clock in
@@ -278,7 +293,10 @@ let reset_state () =
 
 let trace func =
   reset_state ();
-  let empty_state = do_run func [(0, Start, None)] :: [] in
+  let schedule = [(0, Start, None)] in
+  setup_run func schedule ;
+  let empty_state = do_run schedule :: [] in
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty in
-  explore func empty_state empty_clock empty_last_access
+  explore func empty_state empty_clock empty_last_access ;
+  Printf.printf "Finished after %i runs.\n%!" !num_runs
