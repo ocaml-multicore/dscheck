@@ -151,12 +151,6 @@ let spawn f =
   CCVector.push processes
     { next_op = Start; next_repr = None; resume_func = fiber_f; finished = false }
 
-let rec last_element l =
-  match l with
-  | h :: [] -> h
-  | [] -> assert(false)
-  | _ :: tl -> last_element tl
-
 type proc_rec = { proc_id: int; op: atomic_op; obj_ptr : int option }
 type state_cell = { procs: proc_rec list; run_proc: int; run_op: atomic_op; run_ptr: int option; enabled : IntSet.t; mutable backtrack : IntSet.t }
 
@@ -201,7 +195,7 @@ let do_run init_schedule =
       end
   in
   tracing := true;
-  run_trace init_schedule ();
+  run_trace (List.rev init_schedule) ();
   tracing := false;
   if !num_runs mod 1000 == 0 then
     Printf.printf "run: %d\n%!" !num_runs;
@@ -211,17 +205,16 @@ let do_run init_schedule =
                         |> Seq.filter (fun (_,proc) -> not proc.finished)
                         |> Seq.map (fun (id,_) -> id)
                         |> IntSet.of_seq in
-  match last_element init_schedule with
-  | (run_proc, run_op, run_ptr) ->
-    { procs; enabled = current_enabled; run_proc; run_op; run_ptr; backtrack = IntSet.empty }
+  let (run_proc, run_op, run_ptr) = List.hd init_schedule in
+  { procs; enabled = current_enabled; run_proc; run_op; run_ptr; backtrack = IntSet.empty }
 
-let rec explore func state clock last_access =
-  let s = last_element state in
+let rec explore func time state current_schedule clock last_access =
+  let s = List.hd state in
   List.iter (fun proc ->
       let j = proc.proc_id in
       let i = Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access) |> Option.value ~default:0 in
       if i != 0 then begin
-        let pre_s = List.nth state (i-1) in
+        let pre_s = List.nth state (time - i + 1) in
         if IntSet.mem j pre_s.enabled then
           pre_s.backtrack <- IntSet.add j pre_s.backtrack
         else
@@ -237,8 +230,8 @@ let rec explore func state clock last_access =
       let j = IntSet.min_elt (IntSet.diff s.backtrack !dones) in
       dones := IntSet.add j !dones;
       let j_proc = List.nth s.procs j in
-      let new_step = [(j, j_proc.op, j_proc.obj_ptr)] in
-      let full_schedule = List.map (fun s -> (s.run_proc, s.run_op, s.run_ptr)) state @ new_step in
+      let new_step = (j, j_proc.op, j_proc.obj_ptr) in
+      let full_schedule = new_step :: current_schedule in
       let schedule =
         if !is_backtracking
         then begin
@@ -248,14 +241,16 @@ let rec explore func state clock last_access =
         else begin
           is_backtracking := true ;
           schedule_for_checks := full_schedule;
-          new_step
+          [new_step]
         end
       in
-      let statedash = state @ [do_run schedule] in
-      let state_time = (List.length statedash)-1 in
-      let new_last_access = match j_proc.obj_ptr with Some(ptr) -> IntMap.add ptr state_time last_access | None -> last_access in
-      let new_clock = IntMap.add j state_time clock in
-      explore func statedash new_clock new_last_access
+      let s = do_run schedule in
+      let new_state = s :: state in
+      let new_schedule = (s.run_proc, s.run_op, s.run_ptr) :: current_schedule in
+      let new_time = time + 1 in
+      let new_last_access = match j_proc.obj_ptr with Some(ptr) -> IntMap.add ptr new_time last_access | None -> last_access in
+      let new_clock = IntMap.add j new_time clock in
+      explore func new_time new_state new_schedule new_clock new_last_access
     done
   end
 
@@ -277,7 +272,7 @@ let check f =
             Printf.printf "Process %d: %s %s\n" last_run_proc (atomic_op_str last_run_op) last_run_ptr
         end;
       end;
-    ) !schedule_for_checks;
+    ) (List.rev !schedule_for_checks) ;
       assert(false)
   end;
   tracing := tracing_at_start
@@ -293,10 +288,10 @@ let reset_state () =
 
 let trace func =
   reset_state ();
-  let schedule = [(0, Start, None)] in
-  setup_run func schedule ;
-  let empty_state = do_run schedule :: [] in
+  let empty_schedule = [(0, Start, None)] in
+  setup_run func empty_schedule ;
+  let empty_state = do_run empty_schedule :: [] in
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty in
-  explore func empty_state empty_clock empty_last_access ;
+  explore func 1 empty_state empty_schedule empty_clock empty_last_access ;
   Printf.printf "Finished after %i runs.\n%!" !num_runs
