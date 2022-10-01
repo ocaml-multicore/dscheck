@@ -152,7 +152,12 @@ let spawn f =
     { next_op = Start; next_repr = None; resume_func = fiber_f; finished = false }
 
 type proc_rec = { proc_id: int; op: atomic_op; obj_ptr : int option }
-type state_cell = { procs: proc_rec list; run: proc_rec; enabled : IntSet.t; mutable backtrack : IntSet.t }
+type state_cell = {
+  procs : proc_rec list;
+  run : proc_rec;
+  enabled : IntSet.t;
+  mutable backtrack : proc_rec list IntMap.t;
+}
 
 let num_runs = ref 0
 
@@ -167,7 +172,7 @@ let setup_run func init_schedule =
   finished_processes := 0;
   num_runs := !num_runs + 1;
   if !num_runs mod 1000 == 0 then
-    Printf.printf "run: %d\n" !num_runs
+    Printf.printf "run: %d\n%!" !num_runs
 
 let do_run init_schedule =
   (* cache the number of processes in case it's expensive*)
@@ -206,7 +211,7 @@ let do_run init_schedule =
                         |> Seq.map (fun (id,_) -> id)
                         |> IntSet.of_seq in
   let last_run = List.hd init_schedule in
-  { procs; enabled = current_enabled; run = last_run ; backtrack = IntSet.empty }
+  { procs; enabled = current_enabled; run = last_run ; backtrack = IntMap.empty }
 
 type category =
   | Ignore
@@ -220,65 +225,80 @@ let categorize = function
   | Set | Exchange -> Write
   | CompareAndSwap | FetchAndAdd -> Read_write
 
-let mark_backtrack proc time state (last_read, last_write) =
+let mark_backtrack ~is_last proc time state (last_read, last_write) =
   let j = proc.proc_id in
   let find ptr map = match IntMap.find_opt ptr map with
     | None -> None
     | Some lst ->
         List.find_opt (fun (_, proc_id) -> proc_id <> j) lst
   in
-  let i = match categorize proc.op, proc.obj_ptr with
+  let find_loc ~is_last proc =
+    match categorize proc.op, proc.obj_ptr with
     | Ignore, _ -> None
     | Read, Some ptr -> find ptr last_write
-    | Write, Some ptr -> find ptr last_read
-    | Read_write, Some ptr -> max (find ptr last_read) (find ptr last_write)
+    | Write, Some ptr when not is_last -> find ptr last_read
+    | (Write | Read_write), Some ptr -> max (find ptr last_read) (find ptr last_write)
     | _ -> assert false
   in
-  match i with
+  match find_loc ~is_last proc with
   | None -> ()
   | Some (i, _) ->
     assert (List.length state = time) ;
-    let pre_s = List.nth state (time - i) in
-    if IntSet.mem j pre_s.enabled then
-      pre_s.backtrack <- IntSet.add j pre_s.backtrack
+    let pre_s = List.nth state (time - i + 1) in
+    if IntSet.mem j pre_s.enabled then begin
+      let replay_steps = List.filteri (fun k s -> k <= time - i && s.run.proc_id = j) state in
+      let replay_steps = List.map (fun s -> s.run) replay_steps in
+      let todo =
+        match IntMap.find_opt j pre_s.backtrack with
+        | None -> true
+        | Some lst -> List.length lst > List.length replay_steps
+      in
+      let causal p = match find_loc ~is_last:false p with None -> true | Some (k, _) -> k <= i in
+      if todo && List.for_all causal replay_steps
+      then pre_s.backtrack <- IntMap.add j replay_steps pre_s.backtrack
+    end
     else
-      pre_s.backtrack <- IntSet.union pre_s.backtrack pre_s.enabled
+      failwith "TODO: currently untested"
+
+let map_diff_set map set =
+  IntMap.filter (fun key _ -> not (IntSet.mem key set)) map
 
 let rec explore func time state current_schedule clock (last_read, last_write) =
   let s = List.hd state in
   if IntSet.cardinal s.enabled > 0 then begin
     let p = IntSet.min_elt s.enabled in
+    let init_step = List.nth s.procs p in
     let dones = ref IntSet.empty in
-    s.backtrack <- IntSet.singleton p;
+    s.backtrack <- IntMap.singleton p [init_step] ;
     let is_backtracking = ref false in
-    while IntSet.(cardinal (diff s.backtrack !dones)) > 0 do
-      let j = IntSet.min_elt (IntSet.diff s.backtrack !dones) in
+    while IntMap.(cardinal (map_diff_set s.backtrack !dones)) > 0 do
+      let j, new_step = IntMap.min_binding (map_diff_set s.backtrack !dones) in
       dones := IntSet.add j !dones;
-      let j_proc = List.nth s.procs j in
-      let new_step = j_proc in
-      let full_schedule = new_step :: current_schedule in
+      let new_schedule = List.rev_append (List.rev new_step) current_schedule in
       let schedule =
         if !is_backtracking
         then begin
-          setup_run func full_schedule ;
-          full_schedule
+          setup_run func new_schedule ;
+          new_schedule
         end
         else begin
           is_backtracking := true ;
-          schedule_for_checks := full_schedule;
-          [new_step]
+          schedule_for_checks := new_schedule;
+          new_step
         end
       in
       let step = do_run schedule in
-      mark_backtrack step.run time state (last_read, last_write);
-      let new_state = step :: state in
-      let new_schedule = step.run :: current_schedule in
-      let new_time = time + 1 in
+      let new_state =
+        List.map (fun run -> { step with run; backtrack = IntMap.empty }) new_step
+        @ state
+      in
+      let new_time = time + List.length new_step in
+      mark_backtrack ~is_last:(IntSet.is_empty step.enabled) step.run new_time new_state (last_read, last_write);
       let add ptr map =
         IntMap.update
           ptr
-          (function None -> Some [time, step.run.proc_id]
-           | Some steps -> Some ((time, step.run.proc_id) :: steps))
+          (function None -> Some [new_time, step.run.proc_id]
+           | Some steps -> Some ((new_time, step.run.proc_id) :: steps))
           map
       in
       let new_last_access =
