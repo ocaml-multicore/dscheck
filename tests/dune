@@ -7,3 +7,8 @@
  (name test_simple)
  (modules test_simple)
  (libraries dscheck))
+
+(executable
+ (name test_spinlock)
+ (modules test_spinlock)
+ (libraries dscheck))
