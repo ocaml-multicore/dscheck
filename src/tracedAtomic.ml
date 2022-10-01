@@ -234,6 +234,13 @@ let categorize = function
   | Set | Exchange -> Write
   | CompareAndSwap | FetchAndAdd -> Read_write
 
+let rec list_findi predicate lst i = match lst with
+  | [] -> None
+  | x::_ when predicate i x -> Some (i, x)
+  | _::xs -> list_findi predicate xs (i + 1)
+
+let list_findi predicate lst = list_findi predicate lst 0
+
 let mark_backtrack ~is_last proc time state (last_read, last_write) =
   let j = proc.proc_id in
   let find ptr map = match IdMap.find_opt ptr map with
@@ -249,27 +256,39 @@ let mark_backtrack ~is_last proc time state (last_read, last_write) =
     | (Write | Read_write), Some ptr -> max (find ptr last_read) (find ptr last_write)
     | _ -> assert false
   in
+  let rec find_replay_trace ~lower ~upper proc_id =
+    let pre_s = List.nth state (time - upper + 1) in
+    let replay_steps = List.filteri (fun k s -> k >= lower && k <= time - upper && s.run.proc_id = proc_id) state in
+    let replay_steps = List.rev_map (fun s -> s.run) replay_steps in
+    let causal p = match find_loc ~is_last:false p with
+      | None -> true
+      | Some (k, _) -> k <= upper in
+    if List.for_all causal replay_steps
+    then if IdSet.mem proc_id pre_s.enabled
+         then Some replay_steps
+         else let is_parent k s = k > lower && k < time - upper && s.run.op = Spawn && s.run.obj_ptr = Some proc_id in
+              match list_findi is_parent state with
+              | None -> None
+              | Some (parent_i, spawn) ->
+                  assert (parent_i > lower) ;
+                  begin match find_replay_trace ~lower:parent_i ~upper spawn.run.proc_id with
+                  | None -> None
+                  | Some spawn_steps -> Some (spawn_steps @ replay_steps)
+                  end
+    else None
+  in
   match find_loc ~is_last proc with
   | None -> ()
   | Some (i, _) ->
     assert (List.length state = time) ;
     let pre_s = List.nth state (time - i + 1) in
-    if IdSet.mem j pre_s.enabled then begin
-      let replay_steps = List.filteri (fun k s -> k <= time - i && s.run.proc_id = j) state in
-      let replay_steps = List.map (fun s -> s.run) replay_steps in
-      let todo =
-        match IdMap.find_opt j pre_s.backtrack with
+    match find_replay_trace ~lower:0 ~upper:i proc.proc_id with
+    | None -> ()
+    | Some replay_steps ->
+        if match IdMap.find_opt j pre_s.backtrack with
         | None -> true
         | Some lst -> List.length lst > List.length replay_steps
-      in
-      let causal p = match find_loc ~is_last:false p with
-        | None -> true
-        | Some (k, _) -> k <= i in
-      if todo && List.for_all causal replay_steps
-      then pre_s.backtrack <- IdMap.add j (List.rev replay_steps) pre_s.backtrack
-    end
-    else
-      () (* failwith "TODO: currently untested" *)
+        then pre_s.backtrack <- IdMap.add j replay_steps pre_s.backtrack
 
 let map_diff_set map set =
   IdMap.filter (fun key _ -> not (IdSet.mem key set)) map
