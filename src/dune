@@ -1,3 +1,2 @@
 (library
-  (public_name dscheck)
-  (libraries containers oseq))
+  (public_name dscheck))
