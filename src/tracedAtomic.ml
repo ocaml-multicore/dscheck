@@ -172,7 +172,7 @@ let setup_run func init_schedule =
   finished_processes := 0;
   num_runs := !num_runs + 1;
   if !num_runs mod 1000 == 0 then
-    Printf.printf "run: %d\n%!" !num_runs
+    Format.printf "run: %d@." !num_runs
 
 let do_run init_schedule =
   (* cache the number of processes in case it's expensive*)
@@ -211,7 +211,7 @@ let do_run init_schedule =
                         |> Seq.map (fun (id,_) -> id)
                         |> IntSet.of_seq in
   let last_run = List.hd init_schedule in
-  { procs; enabled = current_enabled; run = last_run ; backtrack = IntMap.empty }
+  { procs; enabled = current_enabled; run = last_run; backtrack = IntMap.empty }
 
 type category =
   | Ignore
@@ -253,9 +253,11 @@ let mark_backtrack ~is_last proc time state (last_read, last_write) =
         | None -> true
         | Some lst -> List.length lst > List.length replay_steps
       in
-      let causal p = match find_loc ~is_last:false p with None -> true | Some (k, _) -> k <= i in
+      let causal p = match find_loc ~is_last:false p with
+        | None -> true
+        | Some (k, _) -> k <= i in
       if todo && List.for_all causal replay_steps
-      then pre_s.backtrack <- IntMap.add j replay_steps pre_s.backtrack
+      then pre_s.backtrack <- IntMap.add j (List.rev replay_steps) pre_s.backtrack
     end
     else
       failwith "TODO: currently untested"
@@ -263,56 +265,70 @@ let mark_backtrack ~is_last proc time state (last_read, last_write) =
 let map_diff_set map set =
   IntMap.filter (fun key _ -> not (IntSet.mem key set)) map
 
-let rec explore func time state current_schedule clock (last_read, last_write) =
+let rec explore func time state (explored, state_planned) current_schedule clock (last_read, last_write) =
   let s = List.hd state in
-  if IntSet.cardinal s.enabled > 0 then begin
-    let p = IntSet.min_elt s.enabled in
-    let init_step = List.nth s.procs p in
-    let dones = ref IntSet.empty in
-    s.backtrack <- IntMap.singleton p [init_step] ;
-    let is_backtracking = ref false in
-    while IntMap.(cardinal (map_diff_set s.backtrack !dones)) > 0 do
-      let j, new_step = IntMap.min_binding (map_diff_set s.backtrack !dones) in
-      dones := IntSet.add j !dones;
-      let new_schedule = List.rev_append (List.rev new_step) current_schedule in
-      let schedule =
-        if !is_backtracking
-        then begin
-          setup_run func new_schedule ;
-          new_schedule
-        end
-        else begin
-          is_backtracking := true ;
-          schedule_for_checks := new_schedule;
-          new_step
-        end
-      in
-      let step = do_run schedule in
-      let new_state =
-        List.map (fun run -> { step with run; backtrack = IntMap.empty }) new_step
-        @ state
-      in
-      let new_time = time + List.length new_step in
-      mark_backtrack ~is_last:(IntSet.is_empty step.enabled) step.run new_time new_state (last_read, last_write);
-      let add ptr map =
-        IntMap.update
-          ptr
-          (function None -> Some [new_time, step.run.proc_id]
-           | Some steps -> Some ((new_time, step.run.proc_id) :: steps))
-          map
-      in
-      let new_last_access =
-        match categorize step.run.op, step.run.obj_ptr with
-        | Ignore, _ -> last_read, last_write
-        | Read, Some ptr -> add ptr last_read, last_write
-        | Write, Some ptr -> last_read, add ptr last_write
-        | Read_write, Some ptr -> add ptr last_read, add ptr last_write
-        | _ -> assert false
-      in
-      let new_clock = IntMap.add j new_time clock in
-      explore func new_time new_state new_schedule new_clock new_last_access
-    done
-  end
+  assert (IntMap.is_empty s.backtrack) ;
+  let dones = ref IntSet.empty in
+  begin match state_planned with
+  | [] ->
+    if IntSet.cardinal s.enabled > 0 then begin
+      let p = IntSet.min_elt s.enabled in
+      let init_step = List.nth s.procs p in
+      s.backtrack <- IntMap.singleton p [init_step] ;
+    end
+  | { proc_id ; _ } :: _ ->
+      dones := explored ;
+      s.backtrack <- IntMap.singleton proc_id state_planned
+  end ;
+  let is_backtracking = ref false in
+  while IntMap.(cardinal (map_diff_set s.backtrack !dones)) > 0 do
+    let j, new_steps = IntMap.min_binding (map_diff_set s.backtrack !dones) in
+    let new_explored =
+      if !is_backtracking || state_planned <> [] then !dones else IntSet.empty in
+    dones := IntSet.add j !dones;
+    let new_step, new_state_planned =
+      match new_steps with
+      | [] -> assert false
+      | next :: future -> next, future
+    in
+    let new_schedule = new_step :: current_schedule in
+    let schedule =
+      if !is_backtracking
+      then begin
+        setup_run func new_schedule ;
+        new_schedule
+      end
+      else begin
+        is_backtracking := true ;
+        schedule_for_checks := new_schedule;
+        [new_step]
+      end
+    in
+    let step = do_run schedule in
+    let new_state =
+      { step with run = new_step ; backtrack = IntMap.empty }
+      :: state
+    in
+    let new_time = time + 1 in
+    mark_backtrack ~is_last:(IntSet.is_empty step.enabled) step.run new_time new_state (last_read, last_write);
+    let add ptr map =
+      IntMap.update
+        ptr
+        (function None -> Some [new_time, step.run.proc_id]
+         | Some steps -> Some ((new_time, step.run.proc_id) :: steps))
+        map
+    in
+    let new_last_access =
+      match categorize step.run.op, step.run.obj_ptr with
+      | Ignore, _ -> last_read, last_write
+      | Read, Some ptr -> add ptr last_read, last_write
+      | Write, Some ptr -> last_read, add ptr last_write
+      | Read_write, Some ptr -> add ptr last_read, add ptr last_write
+      | _ -> assert false
+    in
+    let new_clock = IntMap.add j new_time clock in
+    explore func new_time new_state (new_explored, new_state_planned) new_schedule new_clock new_last_access
+  done
 
 let every f =
   every_func := f
@@ -324,10 +340,10 @@ let check f =
   let tracing_at_start = !tracing in
   tracing := false;
   if not (f ()) then begin
-    Printf.printf "Found assertion violation at run %d:\n" !num_runs;
+    Format.printf "@.@.Found assertion violation at run %d:@." !num_runs;
     List.iter (fun { proc_id ; op ; obj_ptr } ->
       let last_run_ptr = Option.map string_of_int obj_ptr |> Option.value ~default:"" in
-      Printf.printf "Process %d: %s %s\n" proc_id (atomic_op_str op) last_run_ptr
+      Format.printf "  Process %d: %s %s@." proc_id (atomic_op_str op) last_run_ptr
     ) (List.rev !schedule_for_checks) ;
       assert(false)
   end;
@@ -347,11 +363,12 @@ let trace func =
   let empty_schedule = [{ proc_id = 0 ; op = Start ; obj_ptr = None }] in
   setup_run func empty_schedule ;
   let empty_state = do_run empty_schedule :: [] in
+  let empty_state_planned = (IntSet.empty, []) in
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty, IntMap.empty in
-  explore func 1 empty_state empty_schedule empty_clock empty_last_access
+  explore func 1 empty_state empty_state_planned empty_schedule empty_clock empty_last_access
 
 let trace func =
   Fun.protect
     (fun () -> trace func)
-    ~finally:(fun () -> Printf.printf "Finished after %i runs.\n%!" !num_runs)
+    ~finally:(fun () -> Format.printf "@.Finished after %i runs.@." !num_runs)
