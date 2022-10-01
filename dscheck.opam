@@ -8,8 +8,6 @@ bug-reports: "https://github.com/ocaml-multicore/dscheck/issues"
 depends: [
   "ocaml" {>= "5.0.0"}
   "dune" {>= "2.9"}
-  "containers"
-  "oseq"
   "odoc" {with-doc}
 ]
 build: [
