@@ -313,14 +313,21 @@ let mark_backtrack proc time state (last_read, last_write) =
 let map_subtract_set map set =
   IdMap.filter (fun key _ -> not (IdSet.mem key set)) map
 
+let round_robin previous =
+  let id = previous.run.proc_id in
+  match IdSet.find_first_opt (fun j -> j > id) previous.enabled with
+  | None -> IdSet.min_elt_opt previous.enabled
+  | found -> found
+
 let rec explore func time state (explored, state_planned) current_schedule (last_read, last_write) =
   let s = List.hd state in
   assert (IdMap.is_empty s.backtrack) ;
   let dones = ref IdSet.empty in
   begin match state_planned with
   | [] ->
-    if IdSet.cardinal s.enabled > 0 then begin
-      let p = IdSet.min_elt s.enabled in
+    begin match round_robin s with
+    | None -> assert (IdSet.is_empty s.enabled)
+    | Some p ->
       let init_step = IdMap.find p s.procs in
       s.backtrack <- IdMap.singleton p [init_step] ;
     end
