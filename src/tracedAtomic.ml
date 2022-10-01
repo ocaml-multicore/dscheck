@@ -336,16 +336,18 @@ let every f =
 let final f =
   final_func := f
 
+let print_trace () =
+  List.iter (fun { proc_id ; op ; obj_ptr } ->
+    let last_run_ptr = Option.map string_of_int obj_ptr |> Option.value ~default:"" in
+    Format.printf "  Process %d: %s %s@." proc_id (atomic_op_str op) last_run_ptr
+  ) (List.rev !schedule_for_checks)
+
 let check f =
   let tracing_at_start = !tracing in
   tracing := false;
   if not (f ()) then begin
-    Format.printf "@.@.Found assertion violation at run %d:@." !num_runs;
-    List.iter (fun { proc_id ; op ; obj_ptr } ->
-      let last_run_ptr = Option.map string_of_int obj_ptr |> Option.value ~default:"" in
-      Format.printf "  Process %d: %s %s@." proc_id (atomic_op_str op) last_run_ptr
-    ) (List.rev !schedule_for_checks) ;
-      assert(false)
+    Format.printf "Check: found assertion violation!@." ;
+    assert false
   end;
   tracing := tracing_at_start
 
@@ -366,7 +368,12 @@ let trace func =
   let empty_state_planned = (IntSet.empty, []) in
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty, IntMap.empty in
-  explore func 1 empty_state empty_state_planned empty_schedule empty_clock empty_last_access
+  try explore func 1 empty_state empty_state_planned empty_schedule empty_clock empty_last_access
+  with exn ->
+    Format.printf "Found error at run %d:@." !num_runs;
+    print_trace () ;
+    Format.printf "Unhandled exception: %s@." (Printexc.to_string exn) ;
+    Printexc.print_backtrace stdout
 
 let trace func =
   Fun.protect
