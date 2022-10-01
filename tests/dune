@@ -2,3 +2,8 @@
  (names test_list test_naive_counter)
  (modules test_list test_naive_counter)
  (libraries dscheck))
+
+(executable
+ (name test_simple)
+ (modules test_simple)
+ (libraries dscheck))
