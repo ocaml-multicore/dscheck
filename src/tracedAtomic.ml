@@ -21,7 +21,15 @@ type _ Effect.t +=
   | FetchAndAdd : (int t * int) -> int Effect.t
   | Spawn : (unit -> unit) -> unit Effect.t
 
-type atomic_op = Start | Make | Get | Set | Exchange | CompareAndSwap | FetchAndAdd | Spawn
+type cas_result = Unknown | Success | Failed
+
+type atomic_op =
+  | Start | Make | Get | Set | Exchange | FetchAndAdd | Spawn
+  | CompareAndSwap of cas_result ref
+
+let atomic_op_equal a b = match a, b with
+  | CompareAndSwap _, CompareAndSwap _ -> true
+  | _ -> a = b
 
 let atomic_op_str x =
   match x with
@@ -30,9 +38,14 @@ let atomic_op_str x =
   | Get -> "get"
   | Set -> "set"
   | Exchange -> "exchange"
-  | CompareAndSwap -> "compare_and_swap"
   | FetchAndAdd -> "fetch_and_add"
   | Spawn -> "spawn"
+  | CompareAndSwap cas ->
+      begin match !cas with
+      | Unknown -> "compare_and_swap?"
+      | Success -> "compare_and_swap"
+      | Failed -> "compare_and_no_swap"
+      end
 
 let tracing = ref false
 
@@ -135,8 +148,11 @@ let handler current_process runner =
          | CompareAndSwap ((x,i), s, v) ->
            Some
              (fun (k : (a, _) continuation) ->
+                let res = ref Unknown in
                 update_process_data current_process.uid (fun h ->
-                    continue_with k (Atomic.compare_and_set x s v) h) CompareAndSwap (Some i);
+                  let ok = Atomic.compare_and_set x s v in
+                  res := if ok then Success else Failed ;
+                  continue_with k ok h) (CompareAndSwap res) (Some i);
                 runner ())
          | FetchAndAdd ((v,i), x) ->
            Some
@@ -203,7 +219,7 @@ let do_run init_schedule =
     | { proc_id = process_id_to_run ; op = next_op ; obj_ptr = next_ptr } :: schedule ->
       let process_to_run = get_process process_id_to_run in
       assert(not process_to_run.finished);
-      assert(process_to_run.next_op = next_op);
+      assert(atomic_op_equal process_to_run.next_op next_op);
       assert(process_to_run.next_repr = next_ptr);
       process_to_run.resume_func (handler process_to_run (run_trace schedule))
   in
@@ -231,8 +247,14 @@ type category =
 let categorize = function
   | Spawn | Start | Make -> Ignore
   | Get -> Read
-  | Set | Exchange -> Write
-  | CompareAndSwap | FetchAndAdd -> Read_write
+  | Set -> Write
+  | Exchange | FetchAndAdd -> Read_write
+  | CompareAndSwap res ->
+      begin match !res with
+      | Unknown -> failwith "CAS unknown outcome" (* should not happen *)
+      | Success -> Read_write
+      | Failed -> Read_write
+      end
 
 let rec list_findi predicate lst i = match lst with
   | [] -> None
@@ -241,18 +263,17 @@ let rec list_findi predicate lst i = match lst with
 
 let list_findi predicate lst = list_findi predicate lst 0
 
-let mark_backtrack ~is_last proc time state (last_read, last_write) =
+let mark_backtrack proc time state (last_read, last_write) =
   let j = proc.proc_id in
   let find ptr map = match IdMap.find_opt ptr map with
     | None -> None
     | Some lst ->
         List.find_opt (fun (_, proc_id) -> proc_id <> j) lst
   in
-  let find_loc ~is_last proc =
+  let find_loc proc =
     match categorize proc.op, proc.obj_ptr with
     | Ignore, _ -> None
     | Read, Some ptr -> find ptr last_write
-    | Write, Some ptr when not is_last -> find ptr last_read
     | (Write | Read_write), Some ptr -> max (find ptr last_read) (find ptr last_write)
     | _ -> assert false
   in
@@ -260,7 +281,7 @@ let mark_backtrack ~is_last proc time state (last_read, last_write) =
     let pre_s = List.nth state (time - upper + 1) in
     let replay_steps = List.filteri (fun k s -> k >= lower && k <= time - upper && s.run.proc_id = proc_id) state in
     let replay_steps = List.rev_map (fun s -> s.run) replay_steps in
-    let causal p = match find_loc ~is_last:false p with
+    let causal p = match find_loc p with
       | None -> true
       | Some (k, _) -> k <= upper in
     if List.for_all causal replay_steps
@@ -277,7 +298,7 @@ let mark_backtrack ~is_last proc time state (last_read, last_write) =
                   end
     else None
   in
-  match find_loc ~is_last proc with
+  match find_loc proc with
   | None -> ()
   | Some (i, _) ->
     assert (List.length state = time) ;
@@ -338,7 +359,7 @@ let rec explore func time state (explored, state_planned) current_schedule clock
       :: state
     in
     let new_time = time + 1 in
-    mark_backtrack ~is_last:(IdSet.is_empty step.enabled) step.run new_time new_state (last_read, last_write);
+    mark_backtrack step.run new_time new_state (last_read, last_write);
     let add ptr map =
       IdMap.update
         ptr
