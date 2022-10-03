@@ -1,4 +1,4 @@
-module Atomic = TracedAtomic
+module Atomic = Dscheck.TracedAtomic
 
 (* a simple concurrent list *)
 
