@@ -22,12 +22,13 @@ module Make (Edge : EDGE) = struct
   and s =
     | Ok
     | Skip
+    | Todo
     | Error of string
     | Branch of t M.t
-    | Todo
 
   let min_depth t = t.todo
   let nb_todos t = t.nb
+  let nb_oks t = t.nb_ok
   let has_error t = t.error
 
   let min_todo a b = match a, b with
@@ -57,9 +58,22 @@ module Make (Edge : EDGE) = struct
 
   let simplify t =
     match t.s with
-    | Branch children when M.for_all (fun _ c -> c.s = Ok) children ->
-        assert (t.nb_ok > 0) ;
-        ok t.nb_ok
+    | _ when t.error || t.todo <> None -> t
+    | Branch children ->
+        let ok_children, has_skip = ref 0, ref false in
+        M.iter
+          (fun _ c -> match c.s with
+            | Ok -> incr ok_children
+            | Skip -> has_skip := true
+            | Branch _ ->
+                assert (c.todo = None) ;
+                assert (c.error = false) ;
+                assert (c.nb_ok > 0)
+            | _ -> assert false)
+          children ;
+        if !ok_children = 1 && !has_skip
+        then t
+        else ok t.nb_ok
     | _ -> t
 
   let add edge child t =
@@ -74,7 +88,7 @@ module Make (Edge : EDGE) = struct
       edges
       todo
 
-  let rec insert_todos ~skip_edge todos t =
+  let insert_todos ~skip_edge todos t =
     match t.s, todos with
     | Todo, []
     | Skip, _
@@ -83,22 +97,14 @@ module Make (Edge : EDGE) = struct
         t
     | Todo, todos -> todolist ~skip_edge todos
     | Branch m, edge::todos ->
-        assert (Edge.compare skip_edge edge <> 0) ;
-        let m = match M.find_opt edge m with
-          | None ->
-              let t = todolist ~skip_edge todos in
-              M.add edge t m
-          | Some child ->
-              let child = insert_todos ~skip_edge todos child in
-              M.add edge child m
-        in
-        let m =
-          if M.mem skip_edge m
-          then m
-          else M.add skip_edge skip m
-        in
-        assert (M.mem skip_edge m) ;
-        branch m
+        if M.mem edge m
+        then t
+        else begin
+          let t = todolist ~skip_edge todos in
+          let m = M.add edge t m in
+          assert (M.mem skip_edge m) ;
+          branch m
+        end
 
   let next t = match t.todo, t.s with
     | None, _ -> None

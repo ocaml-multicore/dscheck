@@ -413,20 +413,19 @@ let round_robin previous =
 let rec explore func time state trie current_schedule (last_read, last_write) =
   let s = List.hd state in
   assert (IdMap.is_empty s.backtrack) ;
-  let existed, todo_next =
-    begin match T.next trie with
+  let todo_next =
+    match T.next trie with
     | None ->
         begin match round_robin s with
         | None ->
             assert (IdSet.is_empty s.enabled) ;
-            false, None
+            None
         | Some p ->
             let init_step = IdMap.find p s.procs in
-            false, Some (init_step, T.todo)
+            Some (init_step, T.todo)
         end
     | Some (step, new_trie) ->
-        true, Some (step, new_trie)
-    end
+        Some (step, new_trie)
   in
   match todo_next with
   | None -> false, T.ok 1
@@ -443,7 +442,8 @@ let rec explore func time state trie current_schedule (last_read, last_write) =
         :: state
       in
       let new_time = time + 1 in
-      mark_backtrack step.run new_time new_state (last_read, last_write);
+      if T.nb_oks new_trie = 0 && not (T.has_error new_trie)
+      then mark_backtrack step.run new_time new_state (last_read, last_write);
       let add ptr map =
         IdMap.update
           ptr
@@ -482,7 +482,6 @@ let rec explore func time state trie current_schedule (last_read, last_write) =
     Printexc.print_backtrace stdout ;
     print_trace () ;
 
-    assert (not existed) ;
     true, trie
   end
 
@@ -528,5 +527,5 @@ let trace func =
   print_header () ;
   num_runs := 0 ;
   let _ = explore_all func T.todo in
-  Format.printf "@.Found %i errors after %i runs.@." !error_count !num_runs ;
+  Format.printf "@.Found %#i errors after %#i runs.@." !error_count !num_runs ;
   ()
