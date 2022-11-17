@@ -3,8 +3,8 @@ opam-version: "2.0"
 synopsis: "Traced Atomics"
 maintainer: ["Sadiq Jaffer"]
 authors: ["Sadiq Jaffer"]
-homepage: "https://github.com/sadiqj/dscheck"
-bug-reports: "https://github.com/sadiqj/dscheck/issues"
+homepage: "https://github.com/ocaml-multicore/dscheck"
+bug-reports: "https://github.com/ocaml-multicore/dscheck/issues"
 depends: [
   "ocaml" {>= "5.0.0"}
   "dune" {>= "2.9"}
@@ -28,4 +28,4 @@ build: [
   ]
   ["dune" "install" "-p" name "--create-install-files" name]
 ]
-dev-repo: "git+https://github.com/sadiqj/dscheck.git"
+dev-repo: "git+https://github.com/ocaml-multicore/dscheck.git"
