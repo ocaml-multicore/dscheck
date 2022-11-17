@@ -1,4 +1,4 @@
-(executable
- (name test_list)
- (modules test_list)
+(executables
+ (names test_list test_naive_counter)
+ (modules test_list test_naive_counter)
  (libraries dscheck))
