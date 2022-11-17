@@ -267,8 +267,17 @@ let check f =
   end;
   tracing := tracing_at_start
 
+let reset_state () = 
+  finished_processes := 0; 
+  atomics_counter := 1;
+  num_runs := 0;
+  schedule_for_checks := [];
+  CCVector.clear processes;
+;;
+
 
 let trace func =
+  reset_state ();
   let empty_state = do_run func [(0, Start, None)] :: [] in
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty in

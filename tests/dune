@@ -1,4 +1,9 @@
-(executables
- (names test_list test_naive_counter)
- (modules test_list test_naive_counter)
- (libraries dscheck))
+(test
+ (name test_list)
+ (libraries dscheck alcotest)
+ (modules test_list))
+
+(test
+ (name test_naive_counter)
+ (libraries dscheck alcotest)
+ (modules test_naive_counter))
