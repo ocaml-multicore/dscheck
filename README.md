@@ -5,7 +5,7 @@ Experimental model checker for testing concurrent algorithms based on [Dynamic P
 
 # Usage
 
-Lockfree can be installed from `opam`: `opam install dscheck`. Sample usage on a [naive counter](tests/test_naive_counter.ml) is shown below. 
+Dscheck can be installed from `opam`: `opam install dscheck`. Sample usage on a [naive counter](tests/test_naive_counter.ml) is shown below. 
 
 ```ocaml
 module Atomic = Dscheck.TracedAtomic
