@@ -44,22 +44,6 @@ let atomic_op_equal a b = match a, b with
   | CompareAndSwap _, CompareAndSwap _ -> true
   | _ -> a = b
 
-let atomic_op_str x =
-  match x with
-  | Start -> "start"
-  | Make -> "make"
-  | Get -> "get"
-  | Set -> "set"
-  | Exchange -> "exchange"
-  | FetchAndAdd -> "fetch_and_add"
-  | Spawn -> "spawn"
-  | CompareAndSwap cas ->
-      begin match !cas with
-      | Unknown -> "compare_and_swap?"
-      | Success -> "compare_and_swap"
-      | Failed -> "compare_and_no_swap"
-      end
-
 let tracing = ref false
 
 let finished_processes = ref 0
@@ -201,11 +185,32 @@ type state_cell = {
 module Step = struct
   type t = proc_rec
   let compare a b = Uid.compare a.proc_id b.proc_id
+
+  let atomic_op_str op arg =
+    let arg = match op, arg with
+      | _, None -> "?"
+      | Spawn, Some domain_id -> Uid.pretty domain_id
+      | _, Some ptr -> Uid.to_string ptr
+    in
+    match op with
+    | Start -> "start"
+    | Spawn -> "spawn() = " ^ arg
+    | Make -> "make() = " ^ arg
+    | Get -> "get(" ^ arg ^ ")"
+    | Set -> "set(" ^ arg ^ ")"
+    | Exchange -> "exchange(" ^ arg ^ ")"
+    | FetchAndAdd -> "fetch_and_add(" ^ arg ^ ")"
+    | CompareAndSwap cas ->
+        begin match !cas with
+        | Unknown -> "compare_and_swap(" ^ arg ^ ")"
+        | Success -> "compare_and_swap(" ^ arg ^ ")"
+        | Failed -> "compare_and_no_swap(" ^ arg ^ ")"
+        end
+
   let to_string t =
-    Printf.sprintf "%s %s(%s)"
+    Printf.sprintf "%s %s"
       (Uid.pretty t.proc_id)
-      (atomic_op_str t.op)
-      (Option.value (Option.map Uid.to_string t.obj_ptr) ~default:"")
+      (atomic_op_str t.op t.obj_ptr)
 end
 
 module T = Trie.Make (Step)
@@ -252,10 +257,9 @@ let print_stats trie =
   Format.printf "%!"
 
 let print_trace () =
-  List.iter (fun { proc_id ; op ; obj_ptr } ->
-    let last_run_ptr = Option.map Uid.to_string obj_ptr |> Option.value ~default:"" in
-    Format.printf "  Process %s: %s %s@." (Uid.pretty proc_id) (atomic_op_str op) last_run_ptr
-  ) (List.rev !schedule_for_checks)
+  List.iter
+    (fun step -> Format.printf "  %s@." (Step.to_string step))
+    (List.rev !schedule_for_checks)
 
 
 let setup_run func init_schedule trie =
