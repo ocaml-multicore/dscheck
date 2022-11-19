@@ -506,30 +506,33 @@ let check f =
 
 let error_count = ref 0
 
-let rec explore_all func trie =
+let explore_one func trie =
   let empty_schedule = [{ proc_id = [] ; op = Start ; obj_ptr = None }] in
   setup_run func empty_schedule trie ;
   let empty_state = do_run empty_schedule :: [] in
   let empty_last_access = IdMap.empty, IdMap.empty in
-  let has_error, trie =
-    explore func 1 empty_state trie empty_schedule empty_last_access
-  in
-  match T.min_depth trie with
-  | None ->
-      assert (T.nb_todos trie = 0) ;
-      T.graphviz ~filename:"/tmp/dscheck.dot" trie ;
-      trie
-  | _ when has_error ->
-      error_count := !error_count + 1 ;
-      T.graphviz ~filename:"/tmp/dscheck.dot" trie ;
-      if !error_count >= 5
-      then trie
-      else explore_all func trie
-  | Some _ -> explore_all func trie
+  explore func 1 empty_state trie empty_schedule empty_last_access
 
-let trace func =
+let rec explore_all ~count ~errors func trie =
+  if !error_count >= errors
+  || !num_runs >= count
+  || T.nb_todos trie = 0
+  then trie (* graphviz_output ?graphviz trie *)
+  else begin
+    let has_error, trie = explore_one func trie in
+    if has_error then error_count := !error_count + 1 ;
+    explore_all ~count ~errors func trie
+  end
+
+let graphviz_output ?graphviz trie =
+  match graphviz with
+  | None -> ()
+  | Some filename -> T.graphviz ~filename trie
+
+let trace ?(count = max_int) ?(errors = 1) ?graphviz func =
   print_header () ;
   num_runs := 0 ;
-  let _ = explore_all func T.todo in
+  let trie = explore_all ~count ~errors func T.todo in
+  graphviz_output ?graphviz trie ;
   Format.printf "@.Found %#i errors after %#i runs.@." !error_count !num_runs ;
   ()
