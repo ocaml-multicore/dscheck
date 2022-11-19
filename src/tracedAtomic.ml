@@ -65,12 +65,11 @@ let every_func = ref (fun () -> ())
 let final_func = ref (fun () -> ())
 
 (* Atomics implementation *)
-let atomics_counter = ref (-1)
+let atomics_counter = Atomic.make (-1)
 
 let make v = if !tracing then perform (Make v) else
     begin
-      let i = !atomics_counter in
-      atomics_counter := !atomics_counter - 1;
+      let i = Atomic.fetch_and_add atomics_counter (- 1) in
       (Atomic.make v, [i])
     end
 
