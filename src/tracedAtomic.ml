@@ -310,10 +310,10 @@ let mark_backtrack proc time state (last_read, last_write) =
         | Some lst -> List.length lst > List.length replay_steps
         then pre_s.backtrack <- IdMap.add j replay_steps pre_s.backtrack
 
-let map_diff_set map set =
+let map_subtract_set map set =
   IdMap.filter (fun key _ -> not (IdSet.mem key set)) map
 
-let rec explore func time state (explored, state_planned) current_schedule clock (last_read, last_write) =
+let rec explore func time state (explored, state_planned) current_schedule (last_read, last_write) =
   let s = List.hd state in
   assert (IdMap.is_empty s.backtrack) ;
   let dones = ref IdSet.empty in
@@ -329,11 +329,10 @@ let rec explore func time state (explored, state_planned) current_schedule clock
       s.backtrack <- IdMap.singleton proc_id state_planned
   end ;
   let is_backtracking = ref false in
-  while IdMap.(cardinal (map_diff_set s.backtrack !dones)) > 0 do
-    let j, new_steps = IdMap.min_binding (map_diff_set s.backtrack !dones) in
-    let new_explored =
-      if !is_backtracking || state_planned <> [] then !dones else IdSet.empty in
-    dones := IdSet.add j !dones;
+  while IdMap.(cardinal (map_subtract_set s.backtrack !dones)) > 0 do
+    let j, new_steps = IdMap.min_binding (map_subtract_set s.backtrack !dones) in
+    let new_explored = !dones in
+    dones := IdSet.add j new_explored;
     let new_step, new_state_planned =
       match new_steps with
       | [] -> assert false
@@ -374,8 +373,7 @@ let rec explore func time state (explored, state_planned) current_schedule clock
       | Read_write, Some ptr -> add ptr last_read, add ptr last_write
       | _ -> assert false
     in
-    let new_clock = IdMap.add j new_time clock in
-    explore func new_time new_state (new_explored, new_state_planned) new_schedule new_clock new_last_access
+    explore func new_time new_state (new_explored, new_state_planned) new_schedule new_last_access
   done
 
 let every f =
@@ -406,9 +404,8 @@ let trace func =
   setup_run func empty_schedule ;
   let empty_state = do_run empty_schedule :: [] in
   let empty_state_planned = (IdSet.empty, []) in
-  let empty_clock = IdMap.empty in
   let empty_last_access = IdMap.empty, IdMap.empty in
-  try explore func 1 empty_state empty_state_planned empty_schedule empty_clock empty_last_access
+  try explore func 1 empty_state empty_state_planned empty_schedule empty_last_access
   with exn ->
     Format.printf "Found error at run %d:@." !num_runs;
     print_trace () ;
