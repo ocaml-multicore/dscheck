@@ -4,17 +4,19 @@ module Atomic = Dscheck.TracedAtomic
 
 type conc_list = { value: int; next: conc_list option }
 
-let rec add_node list_head n =
+let rec add_node ~bug list_head n =
   (* try to add a new node to head *)
   let old_head = Atomic.get list_head in
   let new_node = { value = n ; next = (Some old_head) } in
     (* introduce bug *)
-    if Atomic.get list_head = old_head then begin
+    if bug && Atomic.get list_head = old_head then begin
       Atomic.set list_head new_node;
       true
     end
+    else if Atomic.compare_and_set list_head old_head new_node
+    then true
     else
-      add_node list_head n
+      add_node ~bug list_head n
 
 let check_node list_head n =
   let rec check_from_node node =
@@ -28,14 +30,14 @@ let check_node list_head n =
   (* try to find the node *)
     check_from_node (Atomic.get list_head)
 
-let add_and_check list_head n () =
-  assert(add_node list_head n);
+let add_and_check ~bug list_head n () =
+  assert(add_node ~bug list_head n);
   assert(check_node list_head n)
 
-let create_test upto () =
+let create_test ~buggy upto () =
   let list_head = Atomic.make { value = 0 ; next = None } in
   for x = 1 to upto do
-    Atomic.spawn (add_and_check list_head x);
+    Atomic.spawn (add_and_check ~bug:(x = buggy) list_head x);
   done;
   Atomic.final (fun () ->
     for x = 1 to upto do
@@ -44,4 +46,4 @@ let create_test upto () =
   )
 
 let () =
-  Atomic.trace (create_test 8)
+  Atomic.trace (create_test ~buggy:2 4)

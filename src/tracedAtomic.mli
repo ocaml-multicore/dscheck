@@ -46,8 +46,13 @@ val incr : int t -> unit
 val decr : int t -> unit
 (** [decr r] atomically decrements the value of [r] by [1]. *)
 
-val trace : (unit -> unit) -> unit
-(** start the simulation trace *)
+val trace : ?count:int -> ?errors:int -> ?graphviz:string -> (unit -> unit) -> unit
+(** [trace fn] starts the simulation trace on the function [fn].
+
+    - [?count] is the max number of traces to test (defaults to infinity)
+    - [?errors] is the max number of errors to find (defaults to 1)
+    - [?graphviz] is a filename to use for outputting a dot file (defaults to no output)
+ *)
 
 val spawn : (unit -> unit) -> unit
 (** spawn [f] as a new 'thread' *)
