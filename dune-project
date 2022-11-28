@@ -3,7 +3,8 @@
 (generate_opam_files true)
 
 (name dscheck)
-(source (github sadiqj/dscheck))
+(source (github ocaml-multicore/dscheck))
+(license ISC)
 (authors "Sadiq Jaffer")
 (maintainers "Sadiq Jaffer")
 
