@@ -201,7 +201,7 @@ let do_run init_func init_schedule =
   tracing := false;
   num_runs := !num_runs + 1;
   if !num_runs mod 1000 == 0 then
-    Printf.printf "run: %d\n" !num_runs;
+    Printf.printf "run: %d\n%!" !num_runs;
   let procs = CCVector.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) processes |> CCVector.to_list in
   let current_enabled = CCVector.to_seq processes
                         |> OSeq.zip_index
