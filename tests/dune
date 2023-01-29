@@ -12,3 +12,8 @@
  (name test_simple)
  (libraries dscheck)
  (modules test_simple))
+
+(test
+ (name test_bug)
+ (libraries dscheck)
+ (modules test_bug))

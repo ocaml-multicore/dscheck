@@ -53,8 +53,7 @@ let finished_processes = ref 0
 
 type process_data = {
   uid : Uid.t;
-  mutable domain_generator : int;
-  mutable atomic_generator : int;
+  mutable generator : int;
   mutable next_op: atomic_op;
   mutable next_repr: Uid.t option;
   mutable resume_func : (unit, unit) handler -> unit;
@@ -124,8 +123,8 @@ let handler current_process runner =
          | Make v ->
            Some
              (fun (k : (a, _) continuation) ->
-                let i = current_process.atomic_generator :: current_process.uid in
-                current_process.atomic_generator <- current_process.atomic_generator + 1 ;
+                let i = current_process.generator :: current_process.uid in
+                current_process.generator <- current_process.generator + 1 ;
                 let m = (Atomic.make v, i) in
                 update_process_data current_process.uid (fun h -> continue_with k m h) Make (Some i);
                 runner ())
@@ -163,12 +162,18 @@ let handler current_process runner =
             Some
               (fun (k : (a, _) continuation) ->
                  let fiber_f h = continue_with (fiber f) () h in
-                 let uid = current_process.domain_generator :: current_process.uid in
-                 current_process.domain_generator <- current_process.domain_generator + 1 ;
-                 push_process
-                   { uid; domain_generator = 0; atomic_generator = 0; next_op = Start; next_repr = None; resume_func = fiber_f; finished = false } ;
-                 update_process_data current_process.uid (fun h ->
-                     continue_with k () h) Spawn (Some uid);
+                 let uid = current_process.generator :: current_process.uid in
+                 current_process.generator <- current_process.generator + 1 ;
+                 let new_process =
+                   { uid; generator = 0; next_op = Start; next_repr = None; resume_func = fiber_f; finished = false }
+                 in
+                 update_process_data
+                   current_process.uid
+                   (fun h ->
+                     push_process new_process ;
+                     continue_with k () h)
+                   Spawn
+                   (Some uid);
                  runner ())
          | _ ->
            None);
@@ -198,13 +203,14 @@ let setup_run func init_schedule =
   let uid = [] in
   let fiber_f h = continue_with (fiber func) () h in
   push_process
-    { uid; domain_generator = 0; atomic_generator = 0; next_op = Start; next_repr = None; resume_func = fiber_f; finished = false } ;
+    { uid; generator = 0; next_op = Start; next_repr = None; resume_func = fiber_f; finished = false } ;
   tracing := false;
   num_runs := !num_runs + 1;
   if !num_runs mod 1000 == 0 then
     Format.printf "run: %d@." !num_runs
 
 let do_run init_schedule =
+  let trace = ref [] in
   let rec run_trace s () =
     tracing := false;
     !every_func ();
@@ -213,17 +219,19 @@ let do_run init_schedule =
     | [] -> if !finished_processes == IdMap.cardinal !processes then begin
         tracing := false;
         !final_func ();
-        tracing := true
+        tracing := true;
       end
     | { proc_id = process_id_to_run ; op = next_op ; obj_ptr = next_ptr } :: schedule ->
       let process_to_run = get_process process_id_to_run in
       assert(not process_to_run.finished);
       assert(atomic_op_equal process_to_run.next_op next_op);
       assert(process_to_run.next_repr = next_ptr);
+      let run = { proc_id = process_id_to_run ; op = process_to_run.next_op ; obj_ptr = process_to_run.next_repr } in
+      trace := run :: !trace ;
       process_to_run.resume_func (handler process_to_run (run_trace schedule))
   in
   tracing := true;
-  run_trace (List.rev init_schedule) ();
+  run_trace (List.rev init_schedule) () ;
   tracing := false;
   let procs =
     IdMap.mapi (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr }) !processes
@@ -234,7 +242,7 @@ let do_run init_schedule =
     |> Seq.map (fun (id, _) -> id)
     |> IdSet.of_seq
   in
-  let last_run = List.hd init_schedule in
+  let last_run = List.hd !trace in
   { procs; enabled = current_enabled; run = last_run; backtrack = IdMap.empty }
 
 type category =
@@ -252,68 +260,63 @@ let categorize = function
       begin match !res with
       | Unknown -> failwith "CAS unknown outcome" (* should not happen *)
       | Success -> Read_write
-      | Failed -> Read_write
+      | Failed -> Read
       end
 
-let rec list_findi predicate lst i = match lst with
-  | [] -> None
-  | x::_ when predicate i x -> Some (i, x)
-  | _::xs -> list_findi predicate xs (i + 1)
-
-let list_findi predicate lst = list_findi predicate lst 0
-
-let mark_backtrack proc time state (last_read, last_write) =
-  let j = proc.proc_id in
-  let find ptr map = match IdMap.find_opt ptr map with
-    | None -> None
-    | Some lst ->
-        List.find_opt (fun (_, proc_id) -> proc_id <> j) lst
-  in
-  let find_loc proc =
-    match categorize proc.op, proc.obj_ptr with
-    | Ignore, _ -> None
-    | Read, Some ptr -> find ptr last_write
-    | (Write | Read_write), Some ptr -> max (find ptr last_read) (find ptr last_write)
-    | _ -> assert false
-  in
-  let rec find_replay_trace ~lower ~upper proc_id =
-    let pre_s = List.nth state (time - upper + 1) in
-    let replay_steps = List.filteri (fun k s -> k >= lower && k <= time - upper && s.run.proc_id = proc_id) state in
-    let replay_steps = List.rev_map (fun s -> s.run) replay_steps in
-    let causal p = match find_loc p with
-      | None -> true
-      | Some (k, _) -> k <= upper in
-    if List.for_all causal replay_steps
-    then if IdSet.mem proc_id pre_s.enabled
-         then Some replay_steps
-         else let is_parent k s = k > lower && k < time - upper && s.run.op = Spawn && s.run.obj_ptr = Some proc_id in
-              match list_findi is_parent state with
-              | None -> None
-              | Some (parent_i, spawn) ->
-                  assert (parent_i > lower) ;
-                  begin match find_replay_trace ~lower:parent_i ~upper spawn.run.proc_id with
-                  | None -> None
-                  | Some spawn_steps -> Some (spawn_steps @ replay_steps)
-                  end
-    else None
-  in
-  match find_loc proc with
-  | None -> ()
-  | Some (i, _) ->
-    assert (List.length state = time) ;
-    let pre_s = List.nth state (time - i + 1) in
-    match find_replay_trace ~lower:0 ~upper:i proc.proc_id with
-    | None -> ()
-    | Some replay_steps ->
-        if match IdMap.find_opt j pre_s.backtrack with
-        | None -> true
-        | Some lst -> List.length lst > List.length replay_steps
-        then pre_s.backtrack <- IdMap.add j replay_steps pre_s.backtrack
+let mark_backtrack proc state =
+  match proc.op, proc.obj_ptr, state with
+  | (Spawn | Start | Make), _, _
+  | _, None, _
+  | _, _, [] -> ()
+  | _, Some proc_ptr, _ :: state ->
+      let rec go active_uids timeline acc =
+        match timeline with
+        | [] -> ()
+        | pre :: timeline ->
+            let is_required = IdSet.mem pre.run.proc_id active_uids in
+            begin match is_required, pre.run.obj_ptr with
+            | true, Some ptr when ptr = proc_ptr && categorize pre.run.op <> Read ->
+                ()
+            | false, Some ptr when ptr = proc_ptr ->
+                begin match categorize proc.op, categorize pre.run.op with
+                | _, Ignore -> failwith "how?"
+                | Read, Read -> go active_uids timeline acc
+                | _ ->
+                    begin match acc, timeline with
+                    | [], _ | _, [] -> assert false
+                    | last :: _, pre :: _ ->
+                        let j = last.proc_id in
+                        if match IdMap.find_opt j pre.backtrack with
+                           | None -> true
+                           | Some lst -> List.length lst > List.length acc
+                        then (
+                          pre.backtrack <- IdMap.add j acc pre.backtrack ;
+                        )
+                    end
+                end
+            | true, None ->
+                go active_uids timeline (pre.run :: acc)
+            | true, Some ptr ->
+                let active_uids = IdSet.add ptr active_uids in
+                go active_uids timeline (pre.run :: acc)
+            | false, Some ptr when IdSet.mem ptr active_uids ->
+                begin match categorize pre.run.op with
+                | Read -> go active_uids timeline acc
+                | _ ->
+                    let active_uids = IdSet.add pre.run.proc_id active_uids in
+                    go active_uids timeline (pre.run :: acc)
+                end
+            | false, _ ->
+                go active_uids timeline acc
+            end
+      in
+      let active_uids = IdSet.add proc_ptr (IdSet.singleton proc.proc_id) in
+      go active_uids state [proc]
 
 let map_subtract_set map set =
   IdMap.filter (fun key _ -> not (IdSet.mem key set)) map
 
-let rec explore func time state (explored, state_planned) current_schedule (last_read, last_write) =
+let rec explore func time state (explored, state_planned) current_schedule =
   let s = List.hd state in
   assert (IdMap.is_empty s.backtrack) ;
   let dones = ref IdSet.empty in
@@ -352,28 +355,10 @@ let rec explore func time state (explored, state_planned) current_schedule (last
       end
     in
     let step = do_run schedule in
-    let new_state =
-      { step with run = new_step ; backtrack = IdMap.empty }
-      :: state
-    in
+    let new_state = { step with backtrack = IdMap.empty } :: state in
     let new_time = time + 1 in
-    mark_backtrack step.run new_time new_state (last_read, last_write);
-    let add ptr map =
-      IdMap.update
-        ptr
-        (function None -> Some [new_time, step.run.proc_id]
-         | Some steps -> Some ((new_time, step.run.proc_id) :: steps))
-        map
-    in
-    let new_last_access =
-      match categorize step.run.op, step.run.obj_ptr with
-      | Ignore, _ -> last_read, last_write
-      | Read, Some ptr -> add ptr last_read, last_write
-      | Write, Some ptr -> last_read, add ptr last_write
-      | Read_write, Some ptr -> add ptr last_read, add ptr last_write
-      | _ -> assert false
-    in
-    explore func new_time new_state (new_explored, new_state_planned) new_schedule new_last_access
+    mark_backtrack step.run new_state;
+    explore func new_time new_state (new_explored, new_state_planned) new_schedule
   done
 
 let every f =
@@ -410,13 +395,13 @@ let trace func =
   setup_run func empty_schedule ;
   let empty_state = do_run empty_schedule :: [] in
   let empty_state_planned = (IdSet.empty, []) in
-  let empty_last_access = IdMap.empty, IdMap.empty in
-  try explore func 1 empty_state empty_state_planned empty_schedule empty_last_access
+  try explore func 1 empty_state empty_state_planned empty_schedule
   with exn ->
     Format.printf "Found error at run %d:@." !num_runs;
     print_trace () ;
     Format.printf "Unhandled exception: %s@." (Printexc.to_string exn) ;
-    Printexc.print_backtrace stdout
+    Printexc.print_backtrace stdout ;
+    raise exn
 
 let trace func =
   Fun.protect
