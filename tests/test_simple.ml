@@ -12,7 +12,20 @@ let test i =
   Atomic.set y 1 ;
   Atomic.final (fun () -> Atomic.check (fun () -> Atomic.get y <> 2))
 
+let test_0 () = Atomic.trace (fun () -> test 0)
+
+let test_10 () =
+  match Atomic.trace (fun () -> test 10) with
+  | exception _ -> ()
+  | _ -> failwith "expected failure"
+
 let () =
-  Atomic.trace (fun () -> test 0) ;
-  Printf.printf "\n-----------------------------\n\n%!" ;
-  Atomic.trace (fun () -> test 10)
+  let open Alcotest in
+  run "dscheck"
+    [
+      ( "simple",
+        [
+          test_case "test-0" `Quick test_0;
+          test_case "test-10" `Quick test_10;
+        ] );
+    ]

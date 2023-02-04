@@ -10,10 +10,10 @@
 
 (test
  (name test_simple)
- (libraries dscheck)
+ (libraries dscheck alcotest)
  (modules test_simple))
 
 (test
  (name test_bug)
- (libraries dscheck)
+ (libraries dscheck alcotest)
  (modules test_bug))

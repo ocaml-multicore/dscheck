@@ -14,4 +14,17 @@ let test () =
       assert (Atomic.get cancelled)     (* This bug should be detected *)
     )
 
-let () = Atomic.trace test
+let test () =
+  match Atomic.trace test with
+  | exception _ -> ()
+  | _ -> failwith "expected failure"
+
+let () =
+  let open Alcotest in
+  run "dscheck"
+    [
+      ( "bug",
+        [
+          test_case "test" `Quick test;
+        ] );
+    ]
