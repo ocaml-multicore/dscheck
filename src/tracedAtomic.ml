@@ -48,6 +48,7 @@ type process_data = {
   mutable next_repr: int option;
   mutable resume_func : (unit, unit) handler -> unit;
   mutable finished : bool;
+  mutable discontinue_f : unit -> unit;
 }
 
 let every_func = ref (fun () -> ())
@@ -82,18 +83,33 @@ let incr r = ignore (fetch_and_add r 1)
 let decr r = ignore (fetch_and_add r (-1))
 
 (* Tracing infrastructure *)
+
+exception Terminated_early
+
+let discontinue k () = 
+  discontinue_with k Terminated_early ({
+    retc = (fun _ -> ()); 
+    exnc = (function Terminated_early -> () | e -> raise e); 
+    effc = (fun (type a) (_ : a Effect.t) -> None);
+  })
+;;
+  
 let processes = CCVector.create ()
 
-let update_process_data process_id f op repr =
+let update_process_data process_id f op repr k =
   let process_rec = CCVector.get processes process_id in
   process_rec.resume_func <- f;
   process_rec.next_repr <- repr;
-  process_rec.next_op <- op
+  process_rec.next_op <- op;
+  process_rec.discontinue_f <- discontinue k
+;;
 
 let finish_process process_id =
   let process_rec = CCVector.get processes process_id in
   process_rec.finished <- true;
+  process_rec.discontinue_f <- (fun () -> ());
   finished_processes := !finished_processes + 1
+;;
 
 let handler current_process_id runner =
   {
@@ -112,44 +128,44 @@ let handler current_process_id runner =
                 let i = !atomics_counter in
                 let m = (Atomic.make v, i) in
                 atomics_counter := !atomics_counter + 1;
-                update_process_data current_process_id (fun h -> continue_with k m h) Make (Some i);
+                update_process_data current_process_id (fun h -> continue_with k m h) Make (Some i) k;
                 runner ())
          | Get (v,i) ->
            Some
              (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h -> continue_with k (Atomic.get v) h) Get (Some i);
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.get v) h) Get (Some i) k;
                 runner ())
          | Set ((r,i), v) ->
            Some
              (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h -> continue_with k (Atomic.set r v) h) Set (Some i);
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.set r v) h) Set (Some i) k;
                 runner ())
          | Exchange ((a,i), b) ->
            Some
              (fun (k : (a, _) continuation) ->
-                update_process_data current_process_id (fun h -> continue_with k (Atomic.exchange a b) h) Exchange (Some i);
+                update_process_data current_process_id (fun h -> continue_with k (Atomic.exchange a b) h) Exchange (Some i) k;
                 runner ())
          | CompareAndSwap ((x,i), s, v) ->
            Some
              (fun (k : (a, _) continuation) ->
                 update_process_data current_process_id (fun h ->
-                    continue_with k (Atomic.compare_and_set x s v) h) CompareAndSwap (Some i);
+                    continue_with k (Atomic.compare_and_set x s v) h) CompareAndSwap (Some i) k;
                 runner ())
          | FetchAndAdd ((v,i), x) ->
            Some
              (fun (k : (a, _) continuation) ->
                 update_process_data current_process_id (fun h ->
-                    continue_with k (Atomic.fetch_and_add v x) h) FetchAndAdd (Some i);
+                    continue_with k (Atomic.fetch_and_add v x) h) FetchAndAdd (Some i) k;
                 runner ())
          | _ ->
            None);
   }
 
 let spawn f =
-  let fiber_f h =
-    continue_with (fiber f) () h in
+  let fiber_f = fiber f in
+  let resume_func = continue_with fiber_f () in
   CCVector.push processes
-    { next_op = Start; next_repr = None; resume_func = fiber_f; finished = false }
+    { next_op = Start; next_repr = None; resume_func; finished = false; discontinue_f = discontinue fiber_f}
 
 let rec last_element l =
   match l with
@@ -208,6 +224,7 @@ let do_run init_func init_schedule =
                         |> Seq.filter (fun (_,proc) -> not proc.finished)
                         |> Seq.map (fun (id,_) -> id)
                         |> IntSet.of_seq in
+  CCVector.iter (fun proc -> proc.discontinue_f ()) processes;
   CCVector.clear processes;
   atomics_counter := 1;
   match last_element init_schedule with
