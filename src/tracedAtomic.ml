@@ -10,6 +10,28 @@ end
 module IdSet = Set.Make (Uid)
 module IdMap = Map.Make (Uid)
 
+module Uid_pretty = struct
+  let gen = ref 0
+  let cache = ref IdMap.empty
+
+  let find t =
+    match IdMap.find t !cache with
+    | i -> i
+    | exception Not_found ->
+        let i = !gen in
+        incr gen ;
+        cache := IdMap.add t i !cache ;
+        i
+
+  let to_string = function
+    | [] -> "_"
+    | t ->
+        let i = find t in
+        if i >= 0 && i < 26
+        then String.make 1 (Char.chr (Char.code 'A' + i))
+        else string_of_int i
+end
+
 type 'a t = 'a Atomic.t * Uid.t
 
 type _ Effect.t +=
@@ -190,12 +212,37 @@ type state_cell = {
   mutable backtrack : proc_rec list IdMap.t;
 }
 
+let group_by fn = function
+  | [] -> []
+  | first :: rest ->
+      let rec go previous previouses = function
+        | [] -> [previous::previouses]
+        | x::xs when fn x previous -> go x (previous::previouses) xs
+        | x::xs -> (previous::previouses) :: go x [] xs
+      in
+      List.rev (go first [] rest)
+
+let pretty_print h lst =
+  List.iter
+    (function
+      | steps when List.compare_length_with steps 3 <= 0 ->
+          List.iter (fun step -> Format.fprintf h "%s" (Uid_pretty.to_string step.proc_id)) steps
+      | (step :: _) as steps ->
+          Format.fprintf h "(%s%i)" (Uid_pretty.to_string step.proc_id) (List.length steps)
+      | _ -> assert false)
+    (group_by (fun a b -> a.proc_id = b.proc_id) lst)
+
+let clear_line = "\027[2K\r"
+
 let num_runs = ref 0
 
 (* we stash the current state in case a check fails and we need to log it *)
 let schedule_for_checks = ref []
 
 let setup_run func init_schedule =
+  num_runs := !num_runs + 1;
+  if !num_runs mod 1000 == 0 then
+    Format.printf "%srun: %#i %a %!" clear_line !num_runs pretty_print !schedule_for_checks;
   processes := IdMap.empty ;
   finished_processes := 0;
   schedule_for_checks := init_schedule;
@@ -204,10 +251,7 @@ let setup_run func init_schedule =
   let fiber_f h = continue_with (fiber func) () h in
   push_process
     { uid; generator = 0; next_op = Start; next_repr = None; resume_func = fiber_f; finished = false } ;
-  tracing := false;
-  num_runs := !num_runs + 1;
-  if !num_runs mod 1000 == 0 then
-    Format.printf "run: %d@." !num_runs
+  tracing := false
 
 let do_run init_schedule =
   let trace = ref [] in
@@ -406,4 +450,4 @@ let trace func =
 let trace func =
   Fun.protect
     (fun () -> trace func)
-    ~finally:(fun () -> Format.printf "@.Finished after %i runs.@." !num_runs)
+    ~finally:(fun () -> Format.printf "@.Finished after %#i runs.@." !num_runs)
