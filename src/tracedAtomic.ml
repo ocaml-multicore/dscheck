@@ -11,17 +11,9 @@ type _ Effect.t +=
   | CompareAndSwap : ('a t * 'a * 'a) -> bool Effect.t
   | FetchAndAdd : (int t * int) -> int Effect.t
 
-module IntSet = Set.Make (struct
-  let compare = Stdlib.compare
+module IntSet = Set.Make (Int)
 
-  type t = int
-end)
-
-module IntMap = Map.Make (struct
-  type t = int
-
-  let compare = Int.compare
-end)
+module IntMap = Map.Make (Int)
 
 let _string_of_set s = IntSet.fold (fun y x -> string_of_int y ^ "," ^ x) s ""
 
