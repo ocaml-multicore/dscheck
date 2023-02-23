@@ -7,3 +7,13 @@
  (name test_naive_counter)
  (libraries dscheck alcotest)
  (modules test_naive_counter))
+
+(test
+ (name test_simple)
+ (libraries dscheck alcotest)
+ (modules test_simple))
+
+(test
+ (name test_bug)
+ (libraries dscheck alcotest)
+ (modules test_bug))

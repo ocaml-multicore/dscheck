@@ -60,7 +60,7 @@ let () =
       ( "list",
         [
           test_case "naive-1-domain" `Quick (test_list_naive_single_domain);
-          test_case "naive-2-domains" `Quick (test_list_naive 8);
+          test_case "naive-2-domains" `Quick (test_list_naive 2);
           test_case "naive-8-domains" `Quick (test_list_naive 8);
           test_case "safe" `Quick test_list_safe;
         ] );

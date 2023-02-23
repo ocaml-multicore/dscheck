@@ -11,6 +11,4 @@
 (package
  (name dscheck)
  (synopsis "Traced Atomics")
- (depends (ocaml (>= 5.0.0)) dune containers oseq (alcotest (>= 1.6.0))))
-
-
+ (depends (ocaml (>= 5.0.0)) dune (alcotest (>= 1.6.0))))
