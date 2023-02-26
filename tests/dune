@@ -1,3 +1,13 @@
+(executable
+ (name exhaust)
+ (libraries dscheck cmdliner)
+ (modules exhaust))
+
+(test
+ (name test_exhaust)
+ (libraries dscheck alcotest)
+ (modules test_exhaust))
+
 (test
  (name test_list)
  (libraries dscheck alcotest)
