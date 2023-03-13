@@ -12,3 +12,8 @@
  (name test_michael_scott_queue)
  (libraries dscheck alcotest)
  (modules test_michael_scott_queue michael_scott_queue))
+
+(test
+ (name test_disjoint)
+ (libraries dscheck alcotest)
+ (modules test_disjoint))

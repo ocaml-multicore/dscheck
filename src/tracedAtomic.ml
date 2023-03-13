@@ -12,7 +12,6 @@ type _ Effect.t +=
   | FetchAndAdd : (int t * int) -> int Effect.t
 
 module IntSet = Set.Make (Int)
-
 module IntMap = Map.Make (Int)
 
 let _string_of_set s = IntSet.fold (fun y x -> string_of_int y ^ "," ^ x) s ""
@@ -194,6 +193,7 @@ type state_cell = {
 }
 
 let num_runs = ref 0
+let num_traces = ref 0
 
 (* we stash the current state in case a check fails and we need to log it *)
 let schedule_for_checks = ref []
@@ -215,6 +215,7 @@ let do_run init_func init_schedule =
         if !finished_processes == num_processes then (
           tracing := false;
           !final_func ();
+          num_traces := !num_traces + 1;
           tracing := true)
     | (process_id_to_run, next_op, next_ptr) :: schedule ->
         if !finished_processes == num_processes then
@@ -259,21 +260,113 @@ let do_run init_func init_schedule =
         backtrack = IntSet.empty;
       }
 
-let rec explore func state clock last_access =
+module Cvs = struct
+  (* Cvs (clock vectors) let us track happens-before relationship between different objects. *)
+  module Clock_vector = struct
+    type t = (int, CCVector.ro) CCVector.t
+
+    let make size : t = CCVector.init size (fun _ -> 0)
+
+    let extend desired_size t : t =
+      let diff = desired_size - CCVector.length t in
+      if diff <= 0 then t
+      else
+        let mut = CCVector.copy t in
+        for _ = 1 to diff do
+          CCVector.push mut 0
+        done;
+        CCVector.freeze mut
+
+    let update (t : t) ~proc_id ~state_time : t =
+      let t = CCVector.copy t in
+      CCVector.set t proc_id state_time;
+      CCVector.freeze t
+
+    let get t ~proc_id = CCVector.get t proc_id
+
+    let max (t1 : t) (t2 : t) : t =
+      let rec f = function
+        | [], [] -> []
+        | [], _ | _, [] ->
+            failwith
+              (Printf.sprintf
+                 "max: vector clocks have different lengths (%d, %d)"
+                 (CCVector.length t1) (CCVector.length t2))
+        | item1 :: tail1, item2 :: tail2 -> max item1 item2 :: f (tail1, tail2)
+      in
+      CCVector.of_list (f (CCVector.to_list t1, CCVector.to_list t2))
+      |> CCVector.freeze
+  end
+
+  type proc_obj_key = Processor of int | Object of int
+
+  module Proc_obj_map = Map.Make (struct
+    type t = proc_obj_key
+
+    let compare t1 t2 =
+      match (t1, t2) with
+      | Processor v1, Processor v2 | Object v1, Object v2 -> Int.compare v1 v2
+      | Processor _, Object _ -> 1
+      | Object _, Processor _ -> -1
+  end)
+
+  let extend_all desired_size =
+    Proc_obj_map.map (Clock_vector.extend desired_size)
+
+  let update_clock_vectors current_state clock_vectors j j_proc state_time =
+    let cv_length = List.length current_state.procs in
+    let clock_vectors = extend_all cv_length clock_vectors in
+    match j_proc.op with
+    | Make -> clock_vectors
+    | Start ->
+        Proc_obj_map.add (Processor j)
+          (Clock_vector.make cv_length)
+          clock_vectors
+    | Get | Set | Exchange | CompareAndSwap | FetchAndAdd ->
+        let obj_key = Object (Option.get j_proc.obj_ptr) in
+        let proc_key = Processor j in
+        let cv =
+          let proc_cv = Proc_obj_map.find proc_key clock_vectors in
+          let cv =
+            let obj_cv_opt = Proc_obj_map.find_opt obj_key clock_vectors in
+            match obj_cv_opt with
+            | Some obj_cv ->
+                assert (CCVector.length proc_cv = CCVector.length obj_cv);
+                Clock_vector.max obj_cv proc_cv
+            | None -> proc_cv
+          in
+          Clock_vector.update cv ~proc_id:j ~state_time
+        in
+        Proc_obj_map.update obj_key (fun _ -> Some cv) clock_vectors
+        |> Proc_obj_map.update proc_key (fun _ -> Some cv)
+
+  let init () =
+    Proc_obj_map.add (Processor 0) (Clock_vector.make 1) Proc_obj_map.empty
+
+  let clock_val clock_vectors pre_s proc =
+    let cv = Proc_obj_map.find (Processor proc.proc_id) clock_vectors in
+    Clock_vector.get cv ~proc_id:pre_s.run_proc
+end
+
+let rec explore func state clock_vectors last_access =
   let s = last_element state in
   List.iter
     (fun proc ->
-      let j = proc.proc_id in
-      let i =
+      match
         Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access)
-        |> Option.value ~default:0
-      in
-      if i != 0 then
-        let pre_s = List.nth state (i - 1) in
-        if IntSet.mem j pre_s.enabled then
-          pre_s.backtrack <- IntSet.add j pre_s.backtrack
-        else pre_s.backtrack <- IntSet.union pre_s.backtrack pre_s.enabled)
+      with
+      | None -> ()
+      | Some i ->
+          assert (i > 0);
+          let pre_s = List.nth state (i - 1) in
+          let clock_val = Cvs.clock_val clock_vectors pre_s proc in
+          if i > clock_val then
+            let j = proc.proc_id in
+            if IntSet.mem j pre_s.enabled then
+              pre_s.backtrack <- IntSet.add j pre_s.backtrack
+            else pre_s.backtrack <- IntSet.union pre_s.backtrack pre_s.enabled)
     s.procs;
+  let state_time = List.length state in
   if IntSet.cardinal s.enabled > 0 then (
     let p = IntSet.min_elt s.enabled in
     let dones = ref IntSet.empty in
@@ -286,15 +379,22 @@ let rec explore func state clock last_access =
         List.map (fun s -> (s.run_proc, s.run_op, s.run_ptr)) state
         @ [ (j, j_proc.op, j_proc.obj_ptr) ]
       in
-      let statedash = state @ [ do_run func schedule ] in
-      let state_time = List.length statedash - 1 in
+      let current_state = do_run func schedule in
+      let statedash = state @ [ current_state ] in
+
+      (* Start is a no-op for practical reasons. *)
+      assert (Option.is_some j_proc.obj_ptr || j_proc.op == Start);
+
       let new_last_access =
         match j_proc.obj_ptr with
         | Some ptr -> IntMap.add ptr state_time last_access
         | None -> last_access
       in
-      let new_clock = IntMap.add j state_time clock in
-      explore func statedash new_clock new_last_access
+      (* Update clock vectors *)
+      let new_clock_vectors =
+        Cvs.update_clock_vectors current_state clock_vectors j j_proc state_time
+      in
+      explore func statedash new_clock_vectors new_last_access
     done)
 
 let every f = every_func := f
@@ -323,12 +423,16 @@ let reset_state () =
   finished_processes := 0;
   atomics_counter := 1;
   num_runs := 0;
+  num_traces := 0;
   schedule_for_checks := [];
   CCVector.clear processes
 
 let trace func =
   reset_state ();
   let empty_state = do_run func [ (0, Start, None) ] :: [] in
-  let empty_clock = IntMap.empty in
+  let clock_vectors = Cvs.init () in
   let empty_last_access = IntMap.empty in
-  explore func empty_state empty_clock empty_last_access
+  explore func empty_state clock_vectors empty_last_access
+
+let num_runs () = !num_runs
+let num_traces () = !num_traces
