@@ -23,8 +23,8 @@ let two_vars () =
 
       Atomic.final (fun () -> ()));
 
-  assert (Atomic.num_runs () = 186);
-  assert (Atomic.num_traces () = 31)
+  assert (Atomic.num_runs () = 33);
+  assert (Atomic.num_traces () = 5)
 
 let () =
   let open Alcotest in
