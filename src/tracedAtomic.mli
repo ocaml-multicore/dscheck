@@ -60,3 +60,9 @@ val final : (unit -> unit) -> unit
 
 val every : (unit -> unit) -> unit
 (** run [f] between every possible interleaving *)
+
+val num_runs : unit -> int
+(** [num_runs ()] returns number of states explored in the last run *)
+
+val num_traces : unit -> int
+(** [num_traces ()] returns number of traces validated in the last run *)

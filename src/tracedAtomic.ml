@@ -12,7 +12,6 @@ type _ Effect.t +=
   | FetchAndAdd : (int t * int) -> int Effect.t
 
 module IntSet = Set.Make (Int)
-
 module IntMap = Map.Make (Int)
 
 let _string_of_set s = IntSet.fold (fun y x -> string_of_int y ^ "," ^ x) s ""
@@ -194,6 +193,7 @@ type state_cell = {
 }
 
 let num_runs = ref 0
+let num_traces = ref 0
 
 (* we stash the current state in case a check fails and we need to log it *)
 let schedule_for_checks = ref []
@@ -215,6 +215,7 @@ let do_run init_func init_schedule =
         if !finished_processes == num_processes then (
           tracing := false;
           !final_func ();
+          num_traces := !num_traces + 1;
           tracing := true)
     | (process_id_to_run, next_op, next_ptr) :: schedule ->
         if !finished_processes == num_processes then
@@ -323,6 +324,7 @@ let reset_state () =
   finished_processes := 0;
   atomics_counter := 1;
   num_runs := 0;
+  num_traces := 0;
   schedule_for_checks := [];
   CCVector.clear processes
 
@@ -332,3 +334,6 @@ let trace func =
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty in
   explore func empty_state empty_clock empty_last_access
+
+let num_runs () = !num_runs
+let num_traces () = !num_traces
