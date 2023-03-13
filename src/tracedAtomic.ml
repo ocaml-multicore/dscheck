@@ -295,10 +295,10 @@ module Clock_vector = struct
     |> CCVector.freeze
 end
 
-type key = Processor of int | Object of int
+type proc_obj_key = Processor of int | Object of int
 
 module Proc_obj_map = Map.Make (struct
-  type t = key
+  type t = proc_obj_key
 
   let compare t1 t2 =
     match (t1, t2) with
@@ -314,18 +314,17 @@ let rec explore func state clock_vectors last_access =
   let s = last_element state in
   List.iter
     (fun proc ->
-      let j = proc.proc_id in
-      let i =
-        Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access)
-        |> Option.value ~default:0
-      in
-      if i != 0 then
+      match Option.bind proc.obj_ptr (fun ptr -> IntMap.find_opt ptr last_access) with 
+      | None -> () 
+      | Some i ->
+        assert (i > 0);
         let pre_s = List.nth state (i - 1) in
         let happens_before =
           let cv = Proc_obj_map.find (Processor proc.proc_id) clock_vectors in
           Clock_vector.get cv ~proc_id:pre_s.run_proc
         in
         if i > happens_before then
+          let j = proc.proc_id in
           if IntSet.mem j pre_s.enabled then
             pre_s.backtrack <- IntSet.add j pre_s.backtrack
           else pre_s.backtrack <- IntSet.union pre_s.backtrack pre_s.enabled)
