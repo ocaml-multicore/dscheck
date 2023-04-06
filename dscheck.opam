@@ -10,6 +10,7 @@ depends: [
   "ocaml" {>= "5.0.0"}
   "dune" {>= "2.9"}
   "containers"
+  "tsort"
   "oseq"
   "alcotest" {>= "1.6.0" & with-test}
   "odoc" {with-doc}
