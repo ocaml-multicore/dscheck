@@ -205,7 +205,7 @@ let var_name i =
       let c = Char.chr (i + 96) in
       Printf.sprintf "%c" c
 
-let print_execution_sequence () =
+let print_execution_sequence chan =
   let highest_proc =
     List.fold_left
       (fun highest (curr_proc, _, _) ->
@@ -216,11 +216,12 @@ let print_execution_sequence () =
   let bar =
     List.init ((highest_proc * 20) + 20) (fun _ -> "-") |> String.concat ""
   in
-  Printf.printf "\nsequence %d\n" !num_interleavings;
-  Printf.printf "%s\n" bar;
-  List.init (highest_proc + 1) (fun proc -> Printf.printf "P%d\t\t\t" proc)
+  Printf.fprintf chan "\nsequence %d\n" !num_interleavings;
+  Printf.fprintf chan "%s\n" bar;
+  List.init (highest_proc + 1) (fun proc ->
+      Printf.fprintf chan "P%d\t\t\t" proc)
   |> ignore;
-  Printf.printf "\n%s\n" bar;
+  Printf.fprintf chan "\n%s\n" bar;
 
   List.iter
     (fun s ->
@@ -230,13 +231,14 @@ let print_execution_sequence () =
           let tabs =
             List.init last_run_proc (fun _ -> "\t\t\t") |> String.concat ""
           in
-          Printf.printf "%s%s %s\n" tabs
+          Printf.fprintf chan "%s%s %s\n" tabs
             (atomic_op_str last_run_op)
             last_run_ptr)
     !schedule_for_checks;
-  Printf.printf "%s\n%!" bar
+  Printf.fprintf chan "%s\n%!" bar
 
-let print_max_exec_seq = ref false
+let interleavings_chan = (ref None : out_channel option ref)
+let record_traces_flag = ref false
 
 let do_run init_func init_schedule =
   init_func ();
@@ -254,8 +256,15 @@ let do_run init_func init_schedule =
     | [] ->
         if !finished_processes == num_processes then (
           tracing := false;
+
           num_interleavings := !num_interleavings + 1;
-          if !print_max_exec_seq then print_execution_sequence ();
+          if !record_traces_flag then
+            Trace_tracker.add_trace !schedule_for_checks;
+
+          (match !interleavings_chan with
+          | None -> ()
+          | Some chan -> print_execution_sequence chan);
+
           !final_func ();
           tracing := true)
     | (process_id_to_run, next_op, next_ptr) :: schedule ->
@@ -274,7 +283,7 @@ let do_run init_func init_schedule =
   finished_processes := 0;
   tracing := false;
   num_states := !num_states + 1;
-  if !num_states mod 1000 == 0 then Printf.printf "run: %d\n%!" !num_states;
+  (* if !num_states mod 1000 == 0 then Printf.printf "run: %d\n%!" !num_states; *)
   let procs =
     CCVector.mapi
       (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr })
@@ -347,7 +356,7 @@ let check f =
   tracing := false;
   if not (f ()) then (
     Printf.printf "Found assertion violation at run %d:\n" !num_interleavings;
-    print_execution_sequence ();
+    print_execution_sequence stdout;
     assert false);
   tracing := tracing_at_start
 
@@ -357,15 +366,34 @@ let reset_state () =
   num_states := 0;
   num_interleavings := 0;
   schedule_for_checks := [];
+  Trace_tracker.clear_traces ();
   CCVector.clear processes
 
-let trace ?(print_interleavings = false) func =
-  print_max_exec_seq := print_interleavings;
+let dscheck_trace_file_env = Sys.getenv_opt "dscheck_trace_file"
+
+let dpor func =
   reset_state ();
   let empty_state = do_run func [ (0, Start, None) ] :: [] in
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty in
-  explore func empty_state empty_clock empty_last_access;
-  if print_interleavings then
-    Printf.printf "\nexplored %d maximal interleavings and %d states\n"
-      !num_interleavings !num_states
+  explore func empty_state empty_clock empty_last_access
+
+let trace ?interleavings ?(record_traces = false) func =
+  record_traces_flag := record_traces || Option.is_some dscheck_trace_file_env;
+  interleavings_chan := interleavings;
+
+  dpor func;
+
+  (* print reports *)
+  (match !interleavings_chan with
+  | None -> ()
+  | Some chan ->
+      Printf.fprintf chan "\nexplored %d maximal interleavings and %d states\n"
+        !num_interleavings !num_states);
+
+  match dscheck_trace_file_env with
+  | None -> ()
+  | Some path ->
+      let chan = open_out path in
+      Trace_tracker.print_traces chan;
+      close_out chan

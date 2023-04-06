@@ -46,11 +46,9 @@ val incr : int t -> unit
 val decr : int t -> unit
 (** [decr r] atomically decrements the value of [r] by [1]. *)
 
-val trace : ?print_interleavings:bool -> (unit -> unit) -> unit
-(** start the simulation trace 
-
-    print_interleavings - print out explored interleavings
-*)
+val trace :
+  ?interleavings:out_channel -> ?record_traces:bool -> (unit -> unit) -> unit
+(** start the simulation trace *)
 
 val spawn : (unit -> unit) -> unit
 (** spawn [f] as a new 'thread' *)

@@ -12,6 +12,7 @@ let counter incr () =
       Atomic.check (fun () -> Atomic.get c1 == 2 && Atomic.get c2 == 1))
 
 let test_safe_counter () =
-  Atomic.trace ~print_interleavings:true (counter Atomic.incr)
+  Atomic.trace ~interleavings:stdout ~record_traces:true (counter Atomic.incr);
+  Dscheck.Trace_tracker.print_traces stdout
 
 let _ = test_safe_counter ()

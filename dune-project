@@ -11,6 +11,6 @@
 (package
  (name dscheck)
  (synopsis "Traced Atomics")
- (depends (ocaml (>= 5.0.0)) dune containers oseq (alcotest (and (>= 1.6.0) :with-test))))
+ (depends (ocaml (>= 5.0.0)) dune containers tsort oseq (alcotest (and (>= 1.6.0) :with-test))))
 
 

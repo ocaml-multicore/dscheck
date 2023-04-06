@@ -13,8 +13,27 @@
  (libraries dscheck alcotest)
  (modules test_michael_scott_queue michael_scott_queue))
 
-
 (test
  (name test_trace)
  (libraries dscheck alcotest)
  (modules test_trace))
+
+(rule
+ (with-stdout-to
+  report_trace.output
+  (run ./test_trace.exe)))
+
+(rule
+ (alias runtest)
+ (action
+  (diff report_trace.expected report_trace.output)))
+
+(test
+ (name test_conditional1)
+ (libraries dscheck alcotest)
+ (modules test_conditional1))
+
+(test
+ (name test_conditional2)
+ (libraries dscheck alcotest)
+ (modules test_conditional2))
