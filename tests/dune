@@ -37,3 +37,8 @@
  (name test_conditional2)
  (libraries dscheck alcotest)
  (modules test_conditional2))
+
+(executable
+ (name gen_program)
+ (libraries dscheck)
+ (modules gen_program))

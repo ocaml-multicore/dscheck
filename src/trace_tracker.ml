@@ -104,3 +104,8 @@ let equal t1 t2 =
       (* any values under the same key are known to be equivalent, even if the exact sequence is not identical *))
     t1 t2
   == 0
+
+
+let subset t1 t2 = 
+  TraceMap.fold (fun key _ seen_all -> 
+    TraceMap.mem key t2 && seen_all) t1 true

@@ -310,6 +310,22 @@ let do_run init_func init_schedule =
         backtrack = IntSet.empty;
       }
 
+let rec explore_random func state =
+  let s = last_element state in
+  let enabled = IntSet.to_seq s.enabled |> List.of_seq in
+  let len = List.length enabled in
+  if len == 0 then ()
+  else
+    let random_index = Random.int (List.length enabled) in
+    let j = List.nth enabled random_index in
+    let j_proc = List.nth s.procs j in
+    let schedule =
+      List.map (fun s -> (s.run_proc, s.run_op, s.run_ptr)) state
+      @ [ (j, j_proc.op, j_proc.obj_ptr) ]
+    in
+    let statedash = state @ [ do_run func schedule ] in
+    explore_random func statedash
+
 let rec explore func state clock last_access =
   let s = last_element state in
   List.iter
@@ -371,6 +387,13 @@ let reset_state () =
 
 let dscheck_trace_file_env = Sys.getenv_opt "dscheck_trace_file"
 
+let random func iters =
+  reset_state ();
+  let empty_state = do_run func [ (0, Start, None) ] :: [] in
+  for _ = 1 to iters do
+    explore_random func empty_state
+  done
+
 let dpor func =
   reset_state ();
   let empty_state = do_run func [ (0, Start, None) ] :: [] in
@@ -378,11 +401,11 @@ let dpor func =
   let empty_last_access = IntMap.empty in
   explore func empty_state empty_clock empty_last_access
 
-let trace ?interleavings ?(record_traces = false) func =
+let trace ?(impl = `Dpor) ?interleavings ?(record_traces = false) func =
   record_traces_flag := record_traces || Option.is_some dscheck_trace_file_env;
   interleavings_chan := interleavings;
 
-  dpor func;
+  (match impl with `Dpor -> dpor func | `Random iters -> random func iters);
 
   (* print reports *)
   (match !interleavings_chan with
