@@ -7,3 +7,4 @@ val print_traces : out_channel -> unit
 val print : t -> out_channel -> unit
 val equal : t -> t -> bool
 val get_deps_str : t -> string
+val subset : t -> t -> bool

@@ -13,6 +13,7 @@ depends: [
   "tsort"
   "oseq"
   "alcotest" {>= "1.6.0" & with-test}
+  "cmdliner"
   "odoc" {with-doc}
 ]
 build: [
