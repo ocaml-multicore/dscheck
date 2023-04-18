@@ -16,23 +16,12 @@ P0			P1
 ----------------------------------------
 start 
 			start 
-fetch_and_add a
-			fetch_and_add a
-			fetch_and_add b
-----------------------------------------
-
-sequence 3
-----------------------------------------
-P0			P1			
-----------------------------------------
-start 
-			start 
 			fetch_and_add a
 fetch_and_add a
 			fetch_and_add b
 ----------------------------------------
 
-explored 3 maximal interleavings and 12 states
+explored 2 maximal interleavings and 9 states
 ----
 (1,a),(0,a),(1,b)
 (0,a),(1,a),(1,b)

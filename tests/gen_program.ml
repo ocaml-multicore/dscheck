@@ -249,13 +249,14 @@ let run_random config () =
   let threads = List.init config.thread_count (fun _ -> thread_f ()) in
   let program = ({ globals; threads } : Program.t) in
   if config.print_tests then Program.print program;
-  let random = Program.run ~impl:(`Random 100) program in
+
+  let dpor_source = Program.run ~impl:`Dpor_source program in
   let dpor = Program.run ~impl:`Dpor program in
-  if not (Dscheck.Trace_tracker.subset random dpor) then (
+  if not (Dscheck.Trace_tracker.equal dpor_source dpor) then (
     Printf.printf "found mismatch\n\n%!";
     Program.print program;
     Dscheck.Trace_tracker.print dpor stdout;
-    Dscheck.Trace_tracker.print random stdout;
+    Dscheck.Trace_tracker.print dpor_source stdout;
     assert false)
 
 let run config test_count =
