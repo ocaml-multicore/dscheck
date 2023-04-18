@@ -326,6 +326,174 @@ let rec explore_random func state =
     let statedash = state @ [ do_run func schedule ] in
     explore_random func statedash
 
+let filter_out_happen_after operation sequence =
+  let dependent_proc = ref (IntSet.singleton operation.run_proc) in
+  let dependent_vars =
+    ref
+      (Option.map IntSet.singleton operation.run_ptr
+      |> Option.value ~default:IntSet.empty)
+  in
+  List.filter_map
+    (fun (state_cell : state_cell) ->
+      let happen_after =
+        IntSet.mem state_cell.run_proc !dependent_proc
+        ||
+        match state_cell.run_ptr with
+        | None -> false
+        | Some run_ptr -> IntSet.mem run_ptr !dependent_vars
+      in
+      if happen_after then (
+        dependent_proc := IntSet.add state_cell.run_proc !dependent_proc;
+        match state_cell.run_ptr with
+        | None -> ()
+        | Some run_ptr -> dependent_vars := IntSet.add run_ptr !dependent_vars);
+
+      if happen_after then None else Some state_cell)
+    sequence
+
+let rec explore_source func state sleep_sets =
+  let sleep = ref (last_element sleep_sets) in
+  let s = last_element state in
+  let p_maybe = IntSet.min_elt_opt (IntSet.diff s.enabled !sleep) in
+  match p_maybe with
+  | None -> ()
+  | Some p ->
+      s.backtrack <- IntSet.singleton p;
+
+      while IntSet.(cardinal (diff s.backtrack !sleep)) > 0 do
+        let p = IntSet.min_elt (IntSet.diff s.backtrack !sleep) in
+        let proc = List.nth s.procs p in
+
+        let state_top =
+          let schedule =
+            List.map (fun s -> (s.run_proc, s.run_op, s.run_ptr)) state
+            @ [ (p, proc.op, proc.obj_ptr) ]
+          in
+          do_run func schedule
+        in
+        assert (state_top.run_proc = p);
+        let new_state = state @ [ state_top ] in
+
+        (* Find the most recent race. Technically, this is the only one
+           that fullfils the definition of race as defined per source set
+           paper (as long as our atomic operations access one variable at a time).
+        *)
+        let reversible_race =
+          Option.bind proc.obj_ptr (fun obj_ptr ->
+              let dependent_ops =
+                List.filter
+                  (fun proc' ->
+                    match proc'.run_ptr with
+                    | None -> false
+                    | Some run_ptr -> obj_ptr = run_ptr && proc'.run_proc <> p)
+                  new_state
+              in
+              match List.rev dependent_ops with [] -> None | v :: _ -> Some v)
+        in
+
+        (match reversible_race with
+        | None -> ()
+        | Some e ->
+            let prefix, suffix =
+              (* We need the last operation before the first operation of the race
+                  occured because that's where alternative (reversal) is scheduled.
+                  We need the suffix to compute how to schedule the reversal. *)
+              let found_e, prefix_rev, suffix_rev =
+                List.fold_left
+                  (fun (seen_e, prefix, suffix) proc' ->
+                    if seen_e then (seen_e, prefix, proc' :: suffix)
+                    else if proc' == e then (true, prefix, suffix)
+                    else (false, proc' :: prefix, suffix))
+                  (false, [], []) state
+              in
+
+              assert found_e;
+              (* Out first operation is always a spawn, which cannot
+                 race with anything. Thus, any race has a prefix.
+              *)
+              assert (List.length prefix_rev > 0);
+              assert (
+                List.length suffix_rev
+                = List.length state - List.length prefix_rev - 1);
+              (List.rev prefix_rev, List.rev suffix_rev)
+            in
+
+            (* Filter out operations that are dependent on the first operation
+               of the race (e.g. successive operations of e.run_proc). We definitely
+               don't want to schedule them.
+            *)
+            let indep_and_p =
+              let indep = filter_out_happen_after e suffix in
+              indep @ [ state_top ]
+            in
+
+            (* Compute the set of operations, that lead to reversal of the race.
+               The main premise here is that there may be a number of independent
+               sequences that lead to reversal.
+
+               For example, suppose two racing operations t, t' and some sequences
+               E, w, u. Suppose the current sequence is E.t.w.u.t', t' happens
+               after u and w is independent of everything.
+
+               There's at least two ways to reverse t and t':
+               - E.u.t'.(t,w in any order)
+               - E.w.u.t'.t
+
+               Thus, initials consist of the first operations of u and w, since
+               these are the operations that lead to exploration of the above
+               sequences from E.
+            *)
+            let initials =
+              let rec f = function
+                | [] -> []
+                | initial :: sequence ->
+                    initial.run_proc
+                    :: f (filter_out_happen_after initial sequence)
+              in
+              f indep_and_p
+            in
+
+            (* Exploring one of the initials guarantees that reversal has been
+               visited. Thus, schedule one of the initials only if none of them
+                is in backtrack. *)
+            let prefix_top = last_element prefix in
+            if
+              IntSet.(cardinal (inter prefix_top.backtrack (of_list initials)))
+              = 0
+            then
+              (* We can add any initial*)
+              let initial = last_element initials in
+              prefix_top.backtrack <- IntSet.add initial prefix_top.backtrack);
+
+        let sleep' =
+          (* Keep q that are independent with p only. Must be other thread of execution and act on a different object (or none).
+
+             The key idea here is as follows. Suppose we have processed some execution sequence E and there are
+             just two enabled transitions left. Namely, t=(read a), t'=(read b). Crucially, they are independent.
+             We begin the exploration from E with E.t and descend into E.t.t' afterwards. Since no more transitions
+             are enabled, we return back to E and execute E.t'. But there's no point in executing E.t'.t. Since t and
+             t' are independent, there's a guarantee that E.t.t' and E.t'.t belong to the same trace.
+
+             Therefore, at E, t is put into sleep set, and we explore with E.t' with sleep=[t]. Then E.t'.t gets
+             sleep-set blocked and we save an execution sequence. Naturally, if there's some w such that it's dependent
+             with t, then before we explore E.t'.w, we have to "wake" t up.
+          *)
+          IntSet.filter
+            (fun q ->
+              if q == p then false
+              else
+                let proc' = List.nth s.procs q in
+                match proc'.obj_ptr with
+                | None -> true
+                | Some obj_ptr' ->
+                    Option.map (fun obj_ptr -> obj_ptr <> obj_ptr') proc.obj_ptr
+                    |> Option.value ~default:true)
+            !sleep
+        in
+        explore_source func new_state (sleep_sets @ [ sleep' ]);
+        sleep := IntSet.add p !sleep
+      done
+
 let rec explore func state clock last_access =
   let s = last_element state in
   List.iter
@@ -401,11 +569,19 @@ let dpor func =
   let empty_last_access = IntMap.empty in
   explore func empty_state empty_clock empty_last_access
 
-let trace ?(impl = `Dpor) ?interleavings ?(record_traces = false) func =
+let dpor_source func =
+  reset_state ();
+  let empty_state = do_run func [ (0, Start, None) ] in
+  explore_source func [ empty_state ] [ IntSet.empty ]
+
+let trace ?(impl = `Dpor_source) ?interleavings ?(record_traces = false) func =
   record_traces_flag := record_traces || Option.is_some dscheck_trace_file_env;
   interleavings_chan := interleavings;
 
-  (match impl with `Dpor -> dpor func | `Random iters -> random func iters);
+  (match impl with
+  | `Dpor -> dpor func
+  | `Random iters -> random func iters
+  | `Dpor_source -> dpor_source func);
 
   (* print reports *)
   (match !interleavings_chan with
