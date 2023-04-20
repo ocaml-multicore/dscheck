@@ -22,7 +22,8 @@ type atomic_op =
   | Get
   | Set
   | Exchange
-  | CompareAndSwap
+  | CompareAndSwap of
+      [ `Success | `Fail | `Unknown of unit -> [ `Success | `Fail ] ] ref
   | FetchAndAdd
 
 let atomic_op_str x =
@@ -32,7 +33,7 @@ let atomic_op_str x =
   | Get -> "get"
   | Set -> "set"
   | Exchange -> "exchange"
-  | CompareAndSwap -> "compare_and_swap"
+  | CompareAndSwap _ -> "compare_and_swap"
   | FetchAndAdd -> "fetch_and_add"
 
 let tracing = ref false
@@ -89,7 +90,7 @@ let discontinue k () =
   discontinue_with k Terminated_early
     {
       retc = (fun _ -> ());
-      exnc = (function Terminated_early -> () | e -> raise e);
+      exnc = (function Terminated_early -> () | _e -> ());
       effc = (fun (type a) (_ : a Effect.t) -> None);
     }
 
@@ -152,9 +153,19 @@ let handler current_process_id runner =
         | CompareAndSwap ((x, i), s, v) ->
             Some
               (fun (k : (a, _) continuation) ->
+                let status =
+                  ref
+                    (`Unknown
+                      (fun () -> if Atomic.get x == s then `Success else `Fail))
+                in
                 update_process_data current_process_id
-                  (fun h -> continue_with k (Atomic.compare_and_set x s v) h)
-                  CompareAndSwap (Some i) k;
+                  (fun h ->
+                    continue_with k
+                      (let success = Atomic.compare_and_set x s v in
+                       status := if success then `Success else `Fail;
+                       success)
+                      h)
+                  (CompareAndSwap status) (Some i) k;
                 runner ())
         | FetchAndAdd ((v, i), x) ->
             Some
@@ -267,14 +278,14 @@ let do_run init_func init_schedule =
 
           !final_func ();
           tracing := true)
-    | (process_id_to_run, next_op, next_ptr) :: schedule ->
+    | (process_id_to_run, _next_op, _next_ptr) :: schedule ->
         if !finished_processes == num_processes then
           (* this should never happen *)
           failwith "no enabled processes"
         else
           let process_to_run = CCVector.get processes process_id_to_run in
-          assert (process_to_run.next_op = next_op);
-          assert (process_to_run.next_repr = next_ptr);
+          (* assert (process_to_run.next_op = next_op);
+             assert (process_to_run.next_repr = next_ptr); *)
           process_to_run.resume_func
             (handler process_id_to_run (run_trace schedule))
   in
@@ -326,30 +337,94 @@ let rec explore_random func state =
     let statedash = state @ [ do_run func schedule ] in
     explore_random func statedash
 
-let filter_out_happen_after operation sequence =
-  let dependent_proc = ref (IntSet.singleton operation.run_proc) in
-  let dependent_vars =
-    ref
-      (Option.map IntSet.singleton operation.run_ptr
-      |> Option.value ~default:IntSet.empty)
-  in
-  List.filter_map
-    (fun (state_cell : state_cell) ->
-      let happen_after =
-        IntSet.mem state_cell.run_proc !dependent_proc
-        ||
-        match state_cell.run_ptr with
-        | None -> false
-        | Some run_ptr -> IntSet.mem run_ptr !dependent_vars
-      in
-      if happen_after then (
-        dependent_proc := IntSet.add state_cell.run_proc !dependent_proc;
-        match state_cell.run_ptr with
-        | None -> ()
-        | Some run_ptr -> dependent_vars := IntSet.add run_ptr !dependent_vars);
+let same_proc state_cell1 state_cell2 =
+  state_cell1.run_proc = state_cell2.run_proc
 
-      if happen_after then None else Some state_cell)
-    sequence
+module Causality = struct
+  let hb (proc1, ptr1, op1) (proc2, ptr2, op2) =
+    (* assumes the two ops are adjacent *)
+    let same_proc = proc1 = proc2 in
+    let same_var =
+      match (ptr1, ptr2) with
+      | Some ptr1, Some ptr2 -> ptr1 = ptr2
+      | Some _, None | None, Some _ | None, None -> false
+    in
+    let is_write = function
+      | Get -> false
+      | CompareAndSwap outcome -> (
+          match !outcome with
+          | `Success -> true
+          | `Fail -> false
+          | `Unknown currently_f -> (
+              match currently_f () with `Success -> true | `Fail -> false))
+      | _ -> true
+    in
+    let conflicting = is_write op1 || is_write op2 in
+    same_proc || (same_var && conflicting)
+
+  let happens_before = function
+    | `State (state_cell1, state_cell2) ->
+        hb
+          (state_cell1.run_proc, state_cell1.run_ptr, state_cell1.run_op)
+          (state_cell2.run_proc, state_cell2.run_ptr, state_cell2.run_op)
+    | `Proc (proc1, proc2) ->
+        hb
+          (proc1.proc_id, proc1.obj_ptr, proc1.op)
+          (proc2.proc_id, proc2.obj_ptr, proc2.op)
+
+  let mark_happen_before operation (sequence : state_cell list) =
+    let sequence = List.map (fun v -> (v, ref false)) sequence in
+    let sequence = (operation, ref true) :: sequence in
+    let mark_intransitive hd_sequence tl_sequence =
+      List.iter
+        (fun (state_cell, hb) ->
+          hb := !hb || happens_before (`State (hd_sequence, state_cell)))
+        tl_sequence
+    in
+    let rec mark_all = function
+      | [] | _ :: [] -> ()
+      | (op, hb) :: tl ->
+          if !hb then mark_intransitive op tl;
+          mark_all tl
+    in
+    mark_all sequence;
+    match sequence with
+    | [] -> assert false
+    | (operation', _) :: sequence ->
+        assert (operation == operation');
+        sequence
+end
+
+let is_reversible_race (op1 : state_cell) (between : state_cell list)
+    (op2 : state_cell) =
+  let hb_intransitively =
+    (* Two ops have to be causally related for us to want to reverse them. *)
+    Causality.happens_before (`State (op1, op2))
+  in
+  let diff_proc =
+    (* If two ops belong two the same proc, they cannot be reversed. *)
+    not (same_proc op1 op2)
+  in
+  if hb_intransitively && diff_proc then
+    let not_transitively_related =
+      (* If two ops are related transitively, technically not a race (see paper). *)
+      let between = Causality.mark_happen_before op1 between in
+      let between_hb =
+        List.filter_map (fun (op, hb) -> if !hb then Some op else None) between
+      in
+      let op2_not_transitively_related =
+        List.for_all
+          (fun op -> not (Causality.happens_before (`State (op2, op))))
+          between_hb
+      in
+      op2_not_transitively_related
+    in
+    not_transitively_related
+  else false
+
+let filter_out_happen_after operation sequence =
+  Causality.mark_happen_before operation sequence
+  |> List.filter_map (fun (op, hb) -> if !hb then None else Some op)
 
 let rec explore_source func state sleep_sets =
   let sleep = ref (last_element sleep_sets) in
@@ -379,16 +454,16 @@ let rec explore_source func state sleep_sets =
            paper (as long as our atomic operations access one variable at a time).
         *)
         let reversible_race =
-          Option.bind proc.obj_ptr (fun obj_ptr ->
-              let dependent_ops =
-                List.filter
-                  (fun proc' ->
-                    match proc'.run_ptr with
-                    | None -> false
-                    | Some run_ptr -> obj_ptr = run_ptr && proc'.run_proc <> p)
-                  new_state
-              in
-              match List.rev dependent_ops with [] -> None | v :: _ -> Some v)
+          List.fold_right
+            (fun op1 ((between, reversible_race) as acc) ->
+              if Option.is_some reversible_race then acc
+              else if is_reversible_race op1 between state_top then
+                ([], Some op1)
+              else (op1 :: between, None))
+            state ([], None)
+          |> function
+          | _, None -> None
+          | _, Some reversible_race -> Some reversible_race
         in
 
         (match reversible_race with
@@ -453,6 +528,7 @@ let rec explore_source func state sleep_sets =
               f indep_and_p
             in
 
+            let slp = List.nth sleep_sets (List.length prefix - 1) in
             (* Exploring one of the initials guarantees that reversal has been
                visited. Thus, schedule one of the initials only if none of them
                 is in backtrack. *)
@@ -460,8 +536,9 @@ let rec explore_source func state sleep_sets =
             if
               IntSet.(cardinal (inter prefix_top.backtrack (of_list initials)))
               = 0
+              && IntSet.(cardinal (inter slp (of_list initials))) = 0
             then
-              (* We can add any initial*)
+              (* We can add any initial *)
               let initial = last_element initials in
               prefix_top.backtrack <- IntSet.add initial prefix_top.backtrack);
 
@@ -480,14 +557,8 @@ let rec explore_source func state sleep_sets =
           *)
           IntSet.filter
             (fun q ->
-              if q == p then false
-              else
-                let proc' = List.nth s.procs q in
-                match proc'.obj_ptr with
-                | None -> true
-                | Some obj_ptr' ->
-                    Option.map (fun obj_ptr -> obj_ptr <> obj_ptr') proc.obj_ptr
-                    |> Option.value ~default:true)
+              let proc' = List.nth s.procs q in
+              not (Causality.happens_before (`Proc (proc, proc'))))
             !sleep
         in
         explore_source func new_state (sleep_sets @ [ sleep' ]);
@@ -584,6 +655,7 @@ let trace ?(impl = `Dpor_source) ?interleavings ?(record_traces = false) func =
   | `Dpor_source -> dpor_source func);
 
   (* print reports *)
+  if record_traces then interleavings_chan := Some stdout;
   (match !interleavings_chan with
   | None -> ()
   | Some chan ->

@@ -38,6 +38,11 @@
  (libraries dscheck alcotest)
  (modules test_conditional2))
 
+(test
+ (name test_commutative)
+ (libraries dscheck alcotest)
+ (modules test_commutative))
+
 (executable
  (name gen_program)
  (libraries dscheck)
