@@ -15,7 +15,9 @@ module Op = struct
     let c1 = Int.compare t1.proc t2.proc in
     if c1 <> 0 then c1 else Int.compare t1.step t2.step
 
-  let to_str t = Printf.sprintf "(%d,%c)" t.proc (Char.chr (t.variable + 96))
+  let to_str t =
+    let rw = if Atomic_op.is_write t.atomic_op then "w" else "r" in
+    Printf.sprintf "(%d,%c,%s)" t.proc (Char.chr (t.variable + 96)) rw
 end
 
 module OpSet = struct
@@ -66,10 +68,21 @@ module Trace = struct
   let to_string t = List.map Op.to_str t |> String.concat ","
 
   let tag_with_deps (t : t) : Key.t =
-    let next_dep op t =
-      match List.find_opt (Op.is_dependent op) t with
-      | None -> OpSet.empty
-      | Some dep -> OpSet.singleton dep
+    let next_dep op tl =
+      let (_, deps) = 
+        (List.fold_right
+          (fun curr_op (seen_transitive, deps) ->
+            if seen_transitive then (true, deps)
+            else if
+              Option.is_some
+                (OpSet.find_first_opt (Op.is_dependent curr_op) deps)
+            then (true, deps)
+            else if Op.is_dependent op curr_op then
+              (false, OpSet.add curr_op deps)
+            else (false, deps))
+          tl (false, OpSet.empty)  )
+      in
+      deps 
     in
     let rec f t =
       match t with

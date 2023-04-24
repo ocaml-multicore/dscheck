@@ -648,6 +648,7 @@ let trace ?(impl = `Dpor_source) ?interleavings ?(record_traces = false) func =
   (* print reports *)
   if record_traces && Option.is_none !interleavings_chan then
     interleavings_chan := Some stdout;
+
   (match !interleavings_chan with
   | None -> ()
   | Some chan ->

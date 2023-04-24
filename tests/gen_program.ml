@@ -241,9 +241,6 @@ module Program = struct
 end
 
 let run_random config () =
-  (match config.seed with
-  | None -> Random.self_init ()
-  | Some seed -> Random.init seed);
   let globals = CCVector.of_list (List.init config.globals_count Fun.id) in
   let thread_f = Step.gen ~config ~fuel:config.operations_count in
   let threads = List.init config.thread_count (fun _ -> thread_f ()) in
@@ -260,6 +257,9 @@ let run_random config () =
     assert false)
 
 let run config test_count =
+  (match config.seed with
+  | None -> Random.self_init ()
+  | Some seed -> Random.init seed);
   Printf.printf "\n\n";
   for i = 0 to test_count do
     Printf.printf "----run: %d/%d\r%!" i test_count;
