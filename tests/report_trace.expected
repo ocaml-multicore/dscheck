@@ -23,6 +23,6 @@ fetch_and_add a
 
 explored 2 maximal interleavings and 9 states
 ----
-(1,a),(0,a),(1,b)
-(0,a),(1,a),(1,b)
+(1,a,w),(0,a,w),(1,b,w)
+(0,a,w),(1,a,w),(1,b,w)
 ----

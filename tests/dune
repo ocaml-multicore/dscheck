@@ -44,6 +44,11 @@
  (modules test_commutative))
 
  
+(test
+ (name test_hb)
+ (libraries dscheck alcotest)
+ (modules test_hb))
+
 (executable
  (name gen_program)
  (libraries dscheck)
