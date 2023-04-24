@@ -1,7 +1,15 @@
 module Op = struct
-  type t = { proc : int; variable : int; step : int }
+  type t = {
+    proc : int;
+    variable : int;
+    step : int;
+    is_read : bool;
+    atomic_op : Atomic_op.t;
+  }
 
-  let is_dependent t1 t2 = t1.variable == t2.variable
+  let is_dependent t1 t2 =
+    t1.variable == t2.variable
+    && (Atomic_op.is_write t1.atomic_op || Atomic_op.is_write t2.atomic_op)
 
   let compare_proc_step t1 t2 =
     let c1 = Int.compare t1.proc t2.proc in
@@ -10,15 +18,27 @@ module Op = struct
   let to_str t = Printf.sprintf "(%d,%c)" t.proc (Char.chr (t.variable + 96))
 end
 
+module OpSet = struct
+  include Set.Make (struct
+    include Op
+
+    let compare = compare_proc_step
+  end)
+
+  let to_str t =
+    to_seq t |> List.of_seq |> List.map Op.to_str |> String.concat ", "
+    |> Printf.sprintf "(%s)"
+end
+
 module Trace = struct
   module Key = struct
-    type t = (Op.t * Op.t option) list
+    type t = (Op.t * OpSet.t) list
 
-    let compare t1 t2 =
+    let compare (t1 : t) t2 =
       List.compare
         (fun (op1, dep1) (op2, dep2) ->
           let c1 = Op.compare_proc_step op1 op2 in
-          if c1 <> 0 then c1 else Option.compare Op.compare_proc_step dep1 dep2)
+          if c1 <> 0 then c1 else OpSet.compare dep1 dep2)
         t1 t2
   end
 
@@ -27,7 +47,7 @@ module Trace = struct
   let of_schedule_for_checks schedule_for_checks : t =
     let steps = Hashtbl.create 10 in
     List.map
-      (fun (proc, _, variable) ->
+      (fun (proc, atomic_op, variable) ->
         Option.map
           (fun variable : Op.t ->
             (match Hashtbl.find_opt steps proc with
@@ -38,7 +58,7 @@ module Trace = struct
 
             let step = Hashtbl.find steps proc in
 
-            { proc; variable; step })
+            { proc; variable; step; atomic_op; is_read = false })
           variable)
       schedule_for_checks
     |> List.filter_map Fun.id
@@ -46,22 +66,22 @@ module Trace = struct
   let to_string t = List.map Op.to_str t |> String.concat ","
 
   let tag_with_deps (t : t) : Key.t =
-    let next_dep op t = List.find_opt (Op.is_dependent op) t in
+    let next_dep op t =
+      match List.find_opt (Op.is_dependent op) t with
+      | None -> OpSet.empty
+      | Some dep -> OpSet.singleton dep
+    in
     let rec f t =
       match t with
       | [] -> []
-      | hd :: [] -> [ (hd, None) ]
+      | hd :: [] -> [ (hd, OpSet.empty) ]
       | hd :: tl -> (hd, next_dep hd tl) :: f tl
     in
     let tagged = f t in
     List.sort (fun (op1, _) (op2, _) -> Op.compare_proc_step op1 op2) tagged
 
   let deps_to_str (key : Key.t) : string =
-    List.map
-      (fun (op, dep) ->
-        Op.to_str op ^ "-"
-        ^ (Option.map Op.to_str dep |> Option.value ~default:"none"))
-      key
+    List.map (fun (op, deps) -> Op.to_str op ^ "-" ^ OpSet.to_str deps) key
     |> String.concat ","
 end
 
@@ -105,7 +125,7 @@ let equal t1 t2 =
     t1 t2
   == 0
 
+let subset t1 t2 =
+  TraceMap.fold (fun key _ seen_all -> TraceMap.mem key t2 && seen_all) t1 true
 
-let subset t1 t2 = 
-  TraceMap.fold (fun key _ seen_all -> 
-    TraceMap.mem key t2 && seen_all) t1 true
+let count = TraceMap.cardinal

@@ -23,4 +23,4 @@ let test () =
        Format.printf "tmp=%d x=%d y=%d z=%d\n%!" !tmp (Atomic.get x)
          (Atomic.get y) (Atomic.get z)) *)
 
-let () = Atomic.trace test
+let () = Atomic.trace ~record_traces:true test

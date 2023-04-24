@@ -15,32 +15,11 @@ module IntSet = Set.Make (Int)
 module IntMap = Map.Make (Int)
 
 let _string_of_set s = IntSet.fold (fun y x -> string_of_int y ^ "," ^ x) s ""
-
-type atomic_op =
-  | Start
-  | Make
-  | Get
-  | Set
-  | Exchange
-  | CompareAndSwap of
-      [ `Success | `Fail | `Unknown of unit -> [ `Success | `Fail ] ] ref
-  | FetchAndAdd
-
-let atomic_op_str x =
-  match x with
-  | Start -> "start"
-  | Make -> "make"
-  | Get -> "get"
-  | Set -> "set"
-  | Exchange -> "exchange"
-  | CompareAndSwap _ -> "compare_and_swap"
-  | FetchAndAdd -> "fetch_and_add"
-
 let tracing = ref false
 let finished_processes = ref 0
 
 type process_data = {
-  mutable next_op : atomic_op;
+  mutable next_op : Atomic_op.t;
   mutable next_repr : int option;
   mutable resume_func : (unit, unit) handler -> unit;
   mutable finished : bool;
@@ -153,19 +132,26 @@ let handler current_process_id runner =
         | CompareAndSwap ((x, i), s, v) ->
             Some
               (fun (k : (a, _) continuation) ->
-                let status =
+                let rec status =
                   ref
                     (`Unknown
-                      (fun () -> if Atomic.get x == s then `Success else `Fail))
+                      (fun () ->
+                        let result = Atomic.get x == s in
+                        status := if result then `Success else `Fail;
+                        if result then `Success else `Fail))
                 in
                 update_process_data current_process_id
                   (fun h ->
                     continue_with k
-                      (let success = Atomic.compare_and_set x s v in
-                       status := if success then `Success else `Fail;
-                       success)
+                      ((match !status with
+                       | `Success | `Fail ->
+                           failwith "this result has been predicted"
+                       | `Unknown _ -> ());
+                       let result = Atomic.compare_and_set x s v in
+                       status := if result then `Success else `Fail;
+                       result)
                       h)
-                  (CompareAndSwap status) (Some i) k;
+                  (Atomic_op.CompareAndSwap status) (Some i) k;
                 runner ())
         | FetchAndAdd ((v, i), x) ->
             Some
@@ -192,12 +178,12 @@ let spawn f =
 let rec last_element l =
   match l with h :: [] -> h | [] -> assert false | _ :: tl -> last_element tl
 
-type proc_rec = { proc_id : int; op : atomic_op; obj_ptr : int option }
+type proc_rec = { proc_id : int; op : Atomic_op.t; obj_ptr : int option }
 
 type state_cell = {
   procs : proc_rec list;
   run_proc : int;
-  run_op : atomic_op;
+  run_op : Atomic_op.t;
   run_ptr : int option;
   enabled : IntSet.t;
   mutable backtrack : IntSet.t;
@@ -243,7 +229,7 @@ let print_execution_sequence chan =
             List.init last_run_proc (fun _ -> "\t\t\t") |> String.concat ""
           in
           Printf.fprintf chan "%s%s %s\n" tabs
-            (atomic_op_str last_run_op)
+            (Atomic_op.to_str last_run_op)
             last_run_ptr)
     !schedule_for_checks;
   Printf.fprintf chan "%s\n%!" bar
@@ -259,7 +245,8 @@ let do_run init_func init_schedule =
   (* cache the number of processes in case it's expensive*)
   let num_processes = CCVector.length processes in
   (* current number of ops we are through the current run *)
-  let rec run_trace s () =
+  finished_processes := 0;
+  let rec run_trace s true_schedule_rev () =
     tracing := false;
     !every_func ();
     tracing := true;
@@ -269,8 +256,9 @@ let do_run init_func init_schedule =
           tracing := false;
 
           num_interleavings := !num_interleavings + 1;
+
           if !record_traces_flag then
-            Trace_tracker.add_trace !schedule_for_checks;
+            Trace_tracker.add_trace (List.rev true_schedule_rev);
 
           (match !interleavings_chan with
           | None -> ()
@@ -278,19 +266,31 @@ let do_run init_func init_schedule =
 
           !final_func ();
           tracing := true)
-    | (process_id_to_run, _next_op, _next_ptr) :: schedule ->
+    | (process_id_to_run, next_op, next_ptr) :: schedule -> (
         if !finished_processes == num_processes then
           (* this should never happen *)
           failwith "no enabled processes"
         else
           let process_to_run = CCVector.get processes process_id_to_run in
-          (* assert (process_to_run.next_op = next_op);
-             assert (process_to_run.next_repr = next_ptr); *)
+          let at = process_to_run.next_op in
+          assert (Atomic_op.weak_cmp process_to_run.next_op next_op);
+          assert (process_to_run.next_repr = next_ptr);
+
+          let true_schedule_rev =
+            (process_id_to_run, process_to_run.next_op, process_to_run.next_repr)
+            :: true_schedule_rev
+          in
+
           process_to_run.resume_func
-            (handler process_id_to_run (run_trace schedule))
+            (handler process_id_to_run (run_trace schedule true_schedule_rev));
+          match at with
+          | CompareAndSwap cas -> (
+              match !cas with `Unknown _ -> assert false | _ -> ())
+          | _ -> ())
   in
   tracing := true;
-  run_trace init_schedule ();
+  run_trace init_schedule [] ();
+
   finished_processes := 0;
   tracing := false;
   num_states := !num_states + 1;
@@ -349,16 +349,7 @@ module Causality = struct
       | Some ptr1, Some ptr2 -> ptr1 = ptr2
       | Some _, None | None, Some _ | None, None -> false
     in
-    let is_write = function
-      | Get -> false
-      | CompareAndSwap outcome -> (
-          match !outcome with
-          | `Success -> true
-          | `Fail -> false
-          | `Unknown currently_f -> (
-              match currently_f () with `Success -> true | `Fail -> false))
-      | _ -> true
-    in
+    let is_write = Atomic_op.is_write ~allow_unknown:true in
     let conflicting = is_write op1 || is_write op2 in
     same_proc || (same_var && conflicting)
 
@@ -655,7 +646,8 @@ let trace ?(impl = `Dpor_source) ?interleavings ?(record_traces = false) func =
   | `Dpor_source -> dpor_source func);
 
   (* print reports *)
-  if record_traces then interleavings_chan := Some stdout;
+  if record_traces && Option.is_none !interleavings_chan then
+    interleavings_chan := Some stdout;
   (match !interleavings_chan with
   | None -> ()
   | Some chan ->

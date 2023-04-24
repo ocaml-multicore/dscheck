@@ -9,7 +9,7 @@ let drain queue =
   !remaining
 
 let producer_consumer () =
-  Atomic.trace (fun () ->
+  Atomic.trace ~record_traces:true (fun () ->
       let queue = Michael_scott_queue.create () in
       let items_total = 4 in
 
@@ -35,5 +35,6 @@ let producer_consumer () =
 
 let () =
   let open Alcotest in
+
   run "michael_scott_queue_dscheck"
     [ ("basic", [ test_case "1-producer-1-consumer" `Slow producer_consumer ]) ]
