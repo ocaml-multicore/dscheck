@@ -444,22 +444,20 @@ let rec explore_source func state sleep_sets =
            that fullfils the definition of race as defined per source set
            paper (as long as our atomic operations access one variable at a time).
         *)
-        let reversible_race =
+
+        let reversible_races =
           List.fold_right
-            (fun op1 ((between, reversible_race) as acc) ->
-              if Option.is_some reversible_race then acc
-              else if is_reversible_race op1 between state_top then
-                ([], Some op1)
-              else (op1 :: between, None))
-            state ([], None)
+            (fun op1 ((between, reversible_races)) ->
+              if is_reversible_race op1 between state_top then
+                ([], op1 :: reversible_races)
+              else (op1 :: between, reversible_races))
+            state ([], [])
           |> function
-          | _, None -> None
-          | _, Some reversible_race -> Some reversible_race
+          | _, l -> l
         in
 
-        (match reversible_race with
-        | None -> ()
-        | Some e ->
+        List.iter (fun e ->
+            (* Printf.printf "proc=%d race with e.proc=%d\n%!" p e.run_proc; *)
             let prefix, suffix =
               (* We need the last operation before the first operation of the race
                   occured because that's where alternative (reversal) is scheduled.
@@ -492,7 +490,10 @@ let rec explore_source func state sleep_sets =
               let indep = filter_out_happen_after e suffix in
               indep @ [ state_top ]
             in
-
+            (* List.iter (fun (sc : state_cell) -> 
+              Printf.printf ":: indep: %d\n" sc.run_proc;
+              
+              ) indep_and_p; *)
             (* Compute the set of operations, that lead to reversal of the race.
                The main premise here is that there may be a number of independent
                sequences that lead to reversal.
@@ -519,19 +520,23 @@ let rec explore_source func state sleep_sets =
               f indep_and_p
             in
 
-            let slp = List.nth sleep_sets (List.length prefix - 1) in
             (* Exploring one of the initials guarantees that reversal has been
                visited. Thus, schedule one of the initials only if none of them
                 is in backtrack. *)
             let prefix_top = last_element prefix in
+            (* Printf.printf "initials=[%s], backtrack=[%s]\n"
+              (_string_of_set (IntSet.of_list initials))
+              (_string_of_set prefix_top.backtrack); *)
             if
               IntSet.(cardinal (inter prefix_top.backtrack (of_list initials)))
               = 0
-              && IntSet.(cardinal (inter slp (of_list initials))) = 0
-            then
+              &&
+                 let slp = List.nth sleep_sets (List.length prefix - 1) in
+                 IntSet.(cardinal (inter slp (of_list initials))) = 0
+            then (
               (* We can add any initial *)
               let initial = last_element initials in
-              prefix_top.backtrack <- IntSet.add initial prefix_top.backtrack);
+              prefix_top.backtrack <- IntSet.add initial prefix_top.backtrack)) reversible_races;
 
         let sleep' =
           (* Keep q that are independent with p only. Must be other thread of execution and act on a different object (or none).

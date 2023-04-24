@@ -70,8 +70,8 @@ module Trace = struct
   let tag_with_deps (t : t) : Key.t =
     let next_dep op tl =
       let (_, deps) = 
-        (List.fold_right
-          (fun curr_op (seen_transitive, deps) ->
+        (List.fold_left (* TODO: is fold_left correct here? *)
+          (fun  (seen_transitive, deps) curr_op ->
             if seen_transitive then (true, deps)
             else if
               Option.is_some
@@ -80,7 +80,7 @@ module Trace = struct
             else if Op.is_dependent op curr_op then
               (false, OpSet.add curr_op deps)
             else (false, deps))
-          tl (false, OpSet.empty)  )
+           (false, OpSet.empty) tl  )
       in
       deps 
     in
