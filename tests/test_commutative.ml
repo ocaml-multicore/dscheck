@@ -35,8 +35,7 @@ let test5 () =
   Atomic.spawn (fun () -> Atomic.compare_and_set a 2 3 |> ignore)
 
 let () =
-let _tests = [ test1; test2; test3; test4; test5 ] in
-let tests = [ test3 ] in
+let tests = [ test1; test2; test3; test4; test5 ] in
   List.iter
     (fun test ->
       Atomic.trace ~impl:`Dpor_source test)
