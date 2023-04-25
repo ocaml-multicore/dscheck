@@ -189,6 +189,7 @@ type state_cell = {
   mutable backtrack : IntSet.t;
 }
 
+let sleep_set_blocked = ref 0
 let num_states = ref 0
 let num_interleavings = ref 0
 
@@ -294,7 +295,6 @@ let do_run init_func init_schedule =
   finished_processes := 0;
   tracing := false;
   num_states := !num_states + 1;
-  (* if !num_states mod 1000 == 0 then Printf.printf "run: %d\n%!" !num_states; *)
   let procs =
     CCVector.mapi
       (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr })
@@ -422,7 +422,9 @@ let rec explore_source func state sleep_sets =
   let s = last_element state in
   let p_maybe = IntSet.min_elt_opt (IntSet.diff s.enabled !sleep) in
   match p_maybe with
-  | None -> ()
+  | None ->
+      if not (IntSet.is_empty s.enabled) then
+        sleep_set_blocked := !sleep_set_blocked + 1
   | Some p ->
       s.backtrack <- IntSet.singleton p;
 
@@ -457,7 +459,6 @@ let rec explore_source func state sleep_sets =
 
         List.iter
           (fun e ->
-            (* Printf.printf "proc=%d race with e.proc=%d\n%!" p e.run_proc; *)
             let prefix, suffix =
               (* We need the last operation before the first operation of the race
                   occured because that's where alternative (reversal) is scheduled.
@@ -616,6 +617,7 @@ let reset_state () =
   finished_processes := 0;
   atomics_counter := 1;
   num_states := 0;
+  sleep_set_blocked := 0;
   num_interleavings := 0;
   schedule_for_checks := [];
   Trace_tracker.clear_traces ();
@@ -654,6 +656,8 @@ let trace ?(impl = `Dpor_source) ?interleavings ?(record_traces = false) func =
   (* print reports *)
   if record_traces && Option.is_none !interleavings_chan then
     interleavings_chan := Some stdout;
+
+  Printf.printf "sleep set blocked: %d\n" !sleep_set_blocked;
 
   (match !interleavings_chan with
   | None -> ()
