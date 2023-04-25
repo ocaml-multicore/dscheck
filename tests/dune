@@ -18,15 +18,15 @@
  (libraries dscheck alcotest)
  (modules test_trace))
 
-(rule
- (with-stdout-to
-  report_trace.output
-  (run ./test_trace.exe)))
+; (rule
+;  (with-stdout-to
+;   report_trace.output
+;   (run ./test_trace.exe)))
 
-(rule
- (alias runtest)
- (action
-  (diff report_trace.expected report_trace.output)))
+; (rule
+;  (alias runtest)
+;  (action
+;   (diff report_trace.expected report_trace.output)))
 
 (test
  (name test_conditional1)

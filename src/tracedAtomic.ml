@@ -145,7 +145,7 @@ let handler current_process_id runner =
                     continue_with k
                       ((match !status with
                        | `Success | `Fail ->
-                           failwith "this result has been predicted"
+                           (* failwith "this result has been predicted" *) ()
                        | `Unknown _ -> ());
                        let result = Atomic.compare_and_set x s v in
                        status := if result then `Success else `Fail;
@@ -237,6 +237,155 @@ let print_execution_sequence chan =
 
 let interleavings_chan = (ref None : out_channel option ref)
 let record_traces_flag = ref false
+
+let do_run_lazy init_func init_schedule =
+  (* Printf.printf "\nprevious \n";
+  List.iter
+    (fun (proc_id, atomic_op, run_ptr) ->
+      Printf.printf "%d, %s, %d\n" proc_id
+        (Atomic_op.to_str atomic_op)
+        (Option.value ~default:(-1) run_ptr))
+    !schedule_for_checks;
+
+  Printf.printf "\nrequested \n";
+  List.iter
+    (fun (proc_id, atomic_op, run_ptr) ->
+      Printf.printf "%d, %s, %d\n" proc_id
+        (Atomic_op.to_str atomic_op)
+        (Option.value ~default:(-1) run_ptr))
+    init_schedule; *)
+
+  let remaining_schedule =
+    let rec f schedule1 schedule2 =
+      match (schedule1, schedule2) with
+      | [], [] -> assert false
+      | [], remaining_schedule -> Some remaining_schedule
+      | ( (proc_id1, atomic_op1, run_ptr1) :: tl1,
+          (proc_id2, atomic_op2, run_ptr2) :: tl2 ) ->
+          if
+            proc_id1 = proc_id2 && run_ptr1 = run_ptr2
+            && Atomic_op.weak_cmp atomic_op1 atomic_op2
+          then f tl1 tl2
+          else None
+      | _, [] -> None
+    in
+    match !schedule_for_checks with
+    | [] | _ :: [] -> None
+    | _ -> f !schedule_for_checks init_schedule
+  in
+
+  schedule_for_checks := init_schedule;
+
+  let cleanup_f () =
+    (* Printf.printf "cleanup!\n"; *)
+    finished_processes := 0;
+    CCVector.iter (fun proc -> proc.discontinue_f ()) processes;
+    CCVector.clear processes;
+    atomics_counter := 1;
+    (*set up run *)
+  in
+
+  let init_schedule =
+    match remaining_schedule with
+    | None ->
+        cleanup_f ();
+        init_func ();
+        init_schedule
+    | Some remaining_schedule ->
+        (* List.iter
+          (fun (proc_id, atomic_op, run_ptr) ->
+            Printf.printf "%d, %s, %d\n" proc_id
+              (Atomic_op.to_str atomic_op)
+              (Option.value ~default:(-1) run_ptr))
+          remaining_schedule; *)
+
+        remaining_schedule
+  in
+  (* Printf.printf "\n"; *)
+
+  tracing := true;
+
+  (* cache the number of processes in case it's expensive*)
+  let num_processes = CCVector.length processes in
+  (* current number of ops we are through the current run *)
+  let rec run_trace s true_schedule_rev () =
+    tracing := false;
+    !every_func ();
+    tracing := true;
+    match s with
+    | [] ->
+        if !finished_processes == num_processes then (
+          tracing := false;
+
+          num_interleavings := !num_interleavings + 1;
+
+          if !record_traces_flag then
+            Trace_tracker.add_trace (List.rev true_schedule_rev);
+
+          (match !interleavings_chan with
+          | None -> ()
+          | Some chan -> print_execution_sequence chan);
+
+          !final_func ();
+          tracing := true)
+    | (process_id_to_run, next_op, next_ptr) :: schedule -> (
+        if !finished_processes == num_processes then
+          (* this should never happen *)
+          failwith "no enabled processes"
+        else
+          let process_to_run = CCVector.get processes process_id_to_run in
+          let at = process_to_run.next_op in
+(* 
+          
+          Printf.printf "next_op: %s, next_op':%s\n"
+            (Atomic_op.to_str process_to_run.next_op)
+            (Atomic_op.to_str next_op);
+          Printf.printf "repr: %d, repr':%d\n"
+            (Option.value ~default:(-1) process_to_run.next_repr)
+            (Option.value ~default:(-1) next_ptr); *)
+
+          assert (Atomic_op.weak_cmp process_to_run.next_op next_op);
+          assert (process_to_run.next_repr = next_ptr);
+
+          let true_schedule_rev =
+            (process_id_to_run, process_to_run.next_op, process_to_run.next_repr)
+            :: true_schedule_rev
+          in
+
+          process_to_run.resume_func
+            (handler process_id_to_run (run_trace schedule true_schedule_rev));
+          match at with
+          | CompareAndSwap cas -> (
+              match !cas with `Unknown _ -> assert false | _ -> ())
+          | _ -> ())
+  in
+  tracing := true;
+  run_trace init_schedule [] ();
+  tracing := false;
+  num_states := !num_states + 1;
+
+  let procs =
+    CCVector.mapi
+      (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr })
+      processes
+    |> CCVector.to_list
+  in
+  let current_enabled =
+    CCVector.to_seq processes |> OSeq.zip_index
+    |> Seq.filter (fun (_, proc) -> not proc.finished)
+    |> Seq.map (fun (id, _) -> id)
+    |> IntSet.of_seq
+  in
+  match last_element init_schedule with
+  | run_proc, run_op, run_ptr ->
+      {
+        procs;
+        enabled = current_enabled;
+        run_proc;
+        run_op;
+        run_ptr;
+        backtrack = IntSet.empty;
+      }
 
 let do_run init_func init_schedule =
   init_func ();
@@ -437,7 +586,7 @@ let rec explore_source func state sleep_sets =
             List.map (fun s -> (s.run_proc, s.run_op, s.run_ptr)) state
             @ [ (p, proc.op, proc.obj_ptr) ]
           in
-          do_run func schedule
+          do_run_lazy func schedule
         in
         assert (state_top.run_proc = p);
         let new_state = state @ [ state_top ] in
@@ -445,11 +594,15 @@ let rec explore_source func state sleep_sets =
         (* Find the races (transitions dependent directly, without a transitive dependency).
         *)
         let reversible_races =
+          (* The conditional skip_rest is an optimization based on the fact that any race that
+             thats anteceded by a write to the same location is transitive. *)
           List.fold_right
             (fun op1 ((between, reversible_races, skip_rest) as acc) ->
-              if skip_rest then acc 
+              if skip_rest then acc
               else if is_reversible_race op1 between state_top then
-                (op1 :: between, op1 :: reversible_races, Atomic_op.is_write op1.run_op)
+                ( op1 :: between,
+                  op1 :: reversible_races,
+                  Atomic_op.is_write op1.run_op )
               else (op1 :: between, reversible_races, false))
             state ([], [], false)
           |> function

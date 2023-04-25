@@ -1,3 +1,5 @@
+
+
 module Op = struct
   type t = {
     proc : int;
@@ -7,6 +9,7 @@ module Op = struct
     atomic_op : Atomic_op.t;
   }
 
+  
   let is_dependent t1 t2 =
     t1.variable == t2.variable
     && (Atomic_op.is_write t1.atomic_op || Atomic_op.is_write t2.atomic_op)
