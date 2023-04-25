@@ -490,12 +490,15 @@ let same_proc state_cell1 state_cell2 =
   state_cell1.run_proc = state_cell2.run_proc
 
 module Causality = struct
-  let hb (proc1, ptr1, op1) (proc2, ptr2, op2) =
-    (* assumes the two ops are adjacent *)
+  let hb ((proc1 : int), ptr1, op1) ((proc2 : int), ptr2, op2) =
+    (* assumes the two ops are adjacent 
+      
+      the annotations here help optimize polymorphic compares
+    *)
     let same_proc = proc1 = proc2 in
     let same_var =
       match (ptr1, ptr2) with
-      | Some ptr1, Some ptr2 -> ptr1 = ptr2
+      | Some (ptr1 : int), Some (ptr2 : int) -> ptr1 = ptr2
       | Some _, None | None, Some _ | None, None -> false
     in
     let is_write = Atomic_op.is_write ~allow_unknown:true in
