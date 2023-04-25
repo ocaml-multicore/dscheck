@@ -386,56 +386,8 @@ module Causality = struct
         sequence
 end
 
-module Hb_closure = struct
-  type t = (IntSet.t, CCVector.ro) CCVector.t
-
-  let singleton () : t = CCVector.make 1 (IntSet.of_list [])
-
-  let extend_and_insert t (from : int list) _to =
-    let t = CCVector.copy t in
-    CCVector.push t IntSet.empty;
-    List.iter
-      (fun single_from ->
-        let source = CCVector.get t single_from in
-        let updated = IntSet.add _to source in
-        CCVector.set t single_from updated)
-      from;
-    CCVector.freeze t
-
-  let is_transitive_hb (t : t) (from : int) _to =
-    let source = CCVector.get t from in
-
-    (* assert (IntSet.mem _to source); *)
-    let visited = ref IntSet.empty in
-    let start_set = IntSet.remove _to source in
-
-    let rec traverse s =
-      IntSet.fold
-        (fun node_id acc ->
-          if IntSet.mem node_id !visited then acc
-          else if acc || node_id = _to then true
-          else if node_id > _to then false
-          else
-            let node = CCVector.get t node_id in
-            let result = traverse node in
-            visited := IntSet.add node_id !visited;
-            result)
-        s false
-    in
-    traverse start_set
-
-  let _dump t =
-    Printf.printf "\n\ndump hb closure\n";
-    CCVector.iteri
-      (fun depth level ->
-        Printf.printf "level %d: [%s]\n" depth
-          (IntSet.to_seq level |> List.of_seq |> List.map Int.to_string
-         |> String.concat ","))
-      t
-end
-
-let is_reversible_race (op1 : state_cell) (_between : state_cell list)
-    (op2 : state_cell) (hb_closure, op1_index, op2_index) =
+let is_reversible_race (op1 : state_cell) (between : state_cell list)
+    (op2 : state_cell) =
   let hb_intransitively =
     (* Two ops have to be causally related for us to want to reverse them. *)
     Causality.happens_before (`State (op1, op2))
@@ -445,23 +397,19 @@ let is_reversible_race (op1 : state_cell) (_between : state_cell list)
     not (same_proc op1 op2)
   in
   if hb_intransitively && diff_proc then
-    (* let _not_transitively_related =
-         (* If two ops are related transitively, technically not a race (see paper). *)
-         let between = Causality.mark_happen_before op1 between in
-         let between_hb =
-           List.filter_map (fun (op, hb) -> if !hb then Some op else None) between
-         in
-         let op2_not_transitively_related =
-           List.for_all
-             (fun op -> not (Causality.happens_before (`State (op2, op))))
-             between_hb
-         in
-         op2_not_transitively_related
-       in *)
     let not_transitively_related =
-      not (Hb_closure.is_transitive_hb hb_closure op1_index op2_index)
+      (* If two ops are related transitively, technically not a race (see paper). *)
+      let between = Causality.mark_happen_before op1 between in
+      let between_hb =
+        List.filter_map (fun (op, hb) -> if !hb then Some op else None) between
+      in
+      let op2_not_transitively_related =
+        List.for_all
+          (fun op -> not (Causality.happens_before (`State (op2, op))))
+          between_hb
+      in
+      op2_not_transitively_related
     in
-
     not_transitively_related
   else false
 
@@ -469,8 +417,7 @@ let filter_out_happen_after operation sequence =
   Causality.mark_happen_before operation sequence
   |> List.filter_map (fun (op, hb) -> if !hb then None else Some op)
 
-let rec explore_source func state sleep_sets hb_closure =
-  let state_index = List.length state - 1 in
+let rec explore_source func state sleep_sets =
   let sleep = ref (last_element sleep_sets) in
   let s = last_element state in
   let p_maybe = IntSet.min_elt_opt (IntSet.diff s.enabled !sleep) in
@@ -495,30 +442,13 @@ let rec explore_source func state sleep_sets hb_closure =
         assert (state_top.run_proc = p);
         let new_state = state @ [ state_top ] in
 
-        (* Update happens-before closure *)
-        let hb_closure =
-          let new_hbs =
-            List.mapi
-              (fun i state_cell ->
-                if Causality.happens_before (`State (state_cell, state_top))
-                then Some i
-                else None)
-              state
-            |> List.filter_map Fun.id
-          in
-          Hb_closure.extend_and_insert hb_closure new_hbs (state_index + 1)
-        in
         (* Find the races (transitions dependent directly, without a transitive dependency).
         *)
         let reversible_races =
           List.fold_right
             (fun op1 (between, reversible_races) ->
-              if
-                is_reversible_race op1 between state_top
-                  ( hb_closure,
-                    state_index - List.length between,
-                    state_index + 1 )
-              then (op1 :: between, op1 :: reversible_races)
+              if is_reversible_race op1 between state_top then
+                (op1 :: between, op1 :: reversible_races)
               else (op1 :: between, reversible_races))
             state ([], [])
           |> function
@@ -627,7 +557,7 @@ let rec explore_source func state sleep_sets hb_closure =
               not (Causality.happens_before (`Proc (proc, proc'))))
             !sleep
         in
-        explore_source func new_state (sleep_sets @ [ sleep' ]) hb_closure;
+        explore_source func new_state (sleep_sets @ [ sleep' ]);
         sleep := IntSet.add p !sleep
       done
 
@@ -710,7 +640,7 @@ let dpor func =
 let dpor_source func =
   reset_state ();
   let empty_state = do_run func [ (0, Start, None) ] in
-  explore_source func [ empty_state ] [ IntSet.empty ] (Hb_closure.singleton ())
+  explore_source func [ empty_state ] [ IntSet.empty ]
 
 let trace ?(impl = `Dpor_source) ?interleavings ?(record_traces = false) func =
   record_traces_flag := record_traces || Option.is_some dscheck_trace_file_env;
