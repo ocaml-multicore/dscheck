@@ -410,6 +410,7 @@ let is_reversible_race (op1 : state_cell) (between : state_cell list)
       in
       op2_not_transitively_related
     in
+    assert (true = false);
     not_transitively_related
   else false
 
@@ -446,13 +447,14 @@ let rec explore_source func state sleep_sets =
         *)
         let reversible_races =
           List.fold_right
-            (fun op1 (between, reversible_races) ->
-              if is_reversible_race op1 between state_top then
-                (op1 :: between, op1 :: reversible_races)
-              else (op1 :: between, reversible_races))
-            state ([], [])
+            (fun op1 ((between, reversible_races, skip_rest) as acc) ->
+              if skip_rest then acc 
+              else if is_reversible_race op1 between state_top then
+                (op1 :: between, op1 :: reversible_races, Atomic_op.is_write op1.run_op)
+              else (op1 :: between, reversible_races, false))
+            state ([], [], false)
           |> function
-          | _, l -> l
+          | _, l, _ -> l
         in
 
         List.iter
