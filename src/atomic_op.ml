@@ -18,12 +18,12 @@ let to_str x =
   | CompareAndSwap _ -> "compare_and_swap"
   | FetchAndAdd -> "fetch_and_add"
 
-let is_write ?(allow_unknown=false) op =
+let is_write ?(allow_unknown = false) op =
   (* [allow_unknown] is a switch that lets enabled evaluation of undetermined operations.
 
-    We sometimes need to predict the outcome while DSCheck is running, since it stops right
-    before the operation executes. Elsewhere, e.g. trace_tracker, we operatore on the true 
-    history of terminated execution and should never need this.   
+     We sometimes need to predict the outcome while DSCheck is running, since it stops right
+     before the operation executes. Elsewhere, e.g. trace_tracker, we operatore on the true
+     history of terminated execution and should never need this.
   *)
   match op with
   | Get -> false
@@ -32,12 +32,21 @@ let is_write ?(allow_unknown=false) op =
       | `Success -> true
       | `Fail -> false
       | `Unknown currently_f -> (
-        assert allow_unknown;
+          assert allow_unknown;
           match currently_f () with `Success -> true | `Fail -> false))
   | _ -> true
 
 let weak_cmp t1 t2 =
+  let to_int = function
+    | Start -> 0
+    | Make -> 1
+    | Get -> 2
+    | Set -> 3
+    | Exchange -> 4
+    | FetchAndAdd -> 5
+    | CompareAndSwap _ -> assert false
+  in
   match (t1, t2) with
   | CompareAndSwap _, CompareAndSwap _ -> true
   | CompareAndSwap _, _ | _, CompareAndSwap _ -> false
-  | _, _ -> t1 = t2
+  | _, _ -> to_int t1 = to_int t2
