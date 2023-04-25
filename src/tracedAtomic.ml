@@ -434,7 +434,7 @@ module Hb_closure = struct
       t
 end
 
-let is_reversible_race (op1 : state_cell) (between : state_cell list)
+let is_reversible_race (op1 : state_cell) (_between : state_cell list)
     (op2 : state_cell) (hb_closure, op1_index, op2_index) =
   let hb_intransitively =
     (* Two ops have to be causally related for us to want to reverse them. *)
@@ -445,7 +445,7 @@ let is_reversible_race (op1 : state_cell) (between : state_cell list)
     not (same_proc op1 op2)
   in
   if hb_intransitively && diff_proc then
-    let not_transitively_related =
+    (* let _not_transitively_related =
          (* If two ops are related transitively, technically not a race (see paper). *)
          let between = Causality.mark_happen_before op1 between in
          let between_hb =
@@ -457,10 +457,10 @@ let is_reversible_race (op1 : state_cell) (between : state_cell list)
              between_hb
          in
          op2_not_transitively_related
-       in
-    (* let not_transitively_related =
+       in *)
+    let not_transitively_related =
       not (Hb_closure.is_transitive_hb hb_closure op1_index op2_index)
-    in *)
+    in
 
     not_transitively_related
   else false
