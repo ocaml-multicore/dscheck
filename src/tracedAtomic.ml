@@ -350,8 +350,8 @@ module Causality = struct
       | Some _, None | None, Some _ | None, None -> false
     in
     let is_write = Atomic_op.is_write ~allow_unknown:true in
-    let conflicting = is_write op1 || is_write op2 in
-    same_proc || (same_var && conflicting)
+    let conflicting = Lazy.from_val (is_write op1 || is_write op2) in
+    same_proc || (same_var && Lazy.force conflicting)
 
   let happens_before = function
     | `State (state_cell1, state_cell2) ->
@@ -444,10 +444,9 @@ let rec explore_source func state sleep_sets =
            that fullfils the definition of race as defined per source set
            paper (as long as our atomic operations access one variable at a time).
         *)
-
         let reversible_races =
           List.fold_right
-            (fun op1 ((between, reversible_races)) ->
+            (fun op1 (between, reversible_races) ->
               if is_reversible_race op1 between state_top then
                 ([], op1 :: reversible_races)
               else (op1 :: between, reversible_races))
@@ -456,7 +455,8 @@ let rec explore_source func state sleep_sets =
           | _, l -> l
         in
 
-        List.iter (fun e ->
+        List.iter
+          (fun e ->
             (* Printf.printf "proc=%d race with e.proc=%d\n%!" p e.run_proc; *)
             let prefix, suffix =
               (* We need the last operation before the first operation of the race
@@ -490,10 +490,10 @@ let rec explore_source func state sleep_sets =
               let indep = filter_out_happen_after e suffix in
               indep @ [ state_top ]
             in
-            (* List.iter (fun (sc : state_cell) -> 
-              Printf.printf ":: indep: %d\n" sc.run_proc;
-              
-              ) indep_and_p; *)
+            (* List.iter (fun (sc : state_cell) ->
+               Printf.printf ":: indep: %d\n" sc.run_proc;
+
+               ) indep_and_p; *)
             (* Compute the set of operations, that lead to reversal of the race.
                The main premise here is that there may be a number of independent
                sequences that lead to reversal.
@@ -525,18 +525,19 @@ let rec explore_source func state sleep_sets =
                 is in backtrack. *)
             let prefix_top = last_element prefix in
             (* Printf.printf "initials=[%s], backtrack=[%s]\n"
-              (_string_of_set (IntSet.of_list initials))
-              (_string_of_set prefix_top.backtrack); *)
+               (_string_of_set (IntSet.of_list initials))
+               (_string_of_set prefix_top.backtrack); *)
             if
               IntSet.(cardinal (inter prefix_top.backtrack (of_list initials)))
               = 0
               &&
-                 let slp = List.nth sleep_sets (List.length prefix - 1) in
-                 IntSet.(cardinal (inter slp (of_list initials))) = 0
-            then (
+              let slp = List.nth sleep_sets (List.length prefix - 1) in
+              IntSet.(cardinal (inter slp (of_list initials))) = 0
+            then
               (* We can add any initial *)
               let initial = last_element initials in
-              prefix_top.backtrack <- IntSet.add initial prefix_top.backtrack)) reversible_races;
+              prefix_top.backtrack <- IntSet.add initial prefix_top.backtrack)
+          reversible_races;
 
         let sleep' =
           (* Keep q that are independent with p only. Must be other thread of execution and act on a different object (or none).
