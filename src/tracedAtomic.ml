@@ -410,7 +410,6 @@ let is_reversible_race (op1 : state_cell) (between : state_cell list)
       in
       op2_not_transitively_related
     in
-    assert (true = false);
     not_transitively_related
   else false
 
