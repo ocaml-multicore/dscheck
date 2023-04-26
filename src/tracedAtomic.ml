@@ -260,8 +260,8 @@ let do_run_lazy init_func init_schedule =
       match (schedule1, schedule2) with
       | [], [] -> assert false
       | [], remaining_schedule -> Some remaining_schedule
-      | ( (proc_id1, atomic_op1, run_ptr1) :: tl1,
-          (proc_id2, atomic_op2, run_ptr2) :: tl2 ) ->
+      | ( ((proc_id1 : int), atomic_op1, (run_ptr1 : int option)) :: tl1,
+          ((proc_id2 : int), atomic_op2, run_ptr2) :: tl2 ) ->
           if
             proc_id1 = proc_id2 && run_ptr1 = run_ptr2
             && Atomic_op.weak_cmp atomic_op1 atomic_op2
