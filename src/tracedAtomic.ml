@@ -132,22 +132,38 @@ let handler current_process_id runner =
         | CompareAndSwap ((x, i), s, v) ->
             Some
               (fun (k : (a, _) continuation) ->
-                let rec status =
+                let forced = ref None in
+                let force () =
+                  match !forced with
+                  | Some _ -> ()
+                  | None ->
+                      let result = Atomic.compare_and_set x s v in
+                      forced := Some result
+                in
+
+                let status =
                   ref
                     (`Unknown
-                      (fun () ->
-                        let result = Atomic.get x == s in
-                        status := if result then `Success else `Fail;
-                        if result then `Success else `Fail))
+                      ( (fun () ->
+                          let result = Atomic.get x == s in
+                          (* status := if result then `Success else `Fail; *)
+                          if result then `Success else `Fail),
+                        force ))
                 in
+
+                (* (match !status with
+                   | `Unknown f -> f () |> ignore
+                   | _ -> ()); *)
                 update_process_data current_process_id
                   (fun h ->
                     continue_with k
-                      ((match !status with
-                       | `Success | `Fail ->
-                           (* failwith "this result has been predicted" *) ()
-                       | `Unknown _ -> ());
-                       let result = Atomic.compare_and_set x s v in
+                      (force ();
+
+                       let result = Option.get !forced in
+                       (* (match !status with
+                          | `Success -> assert (result)
+                          | `Fail -> assert (not result)
+                          | `Unknown _ -> ()); *)
                        status := if result then `Success else `Fail;
                        result)
                       h)
@@ -237,23 +253,38 @@ let print_execution_sequence chan =
 
 let interleavings_chan = (ref None : out_channel option ref)
 let record_traces_flag = ref false
+let true_schedule_rev = ref []
 
 let do_run_lazy init_func init_schedule =
   (* Printf.printf "\nprevious \n";
-  List.iter
-    (fun (proc_id, atomic_op, run_ptr) ->
-      Printf.printf "%d, %s, %d\n" proc_id
-        (Atomic_op.to_str atomic_op)
-        (Option.value ~default:(-1) run_ptr))
-    !schedule_for_checks;
+     List.iter
+       (fun (proc_id, atomic_op, run_ptr) ->
+         Printf.printf "%d, %s, %d\n" proc_id
+           (Atomic_op.to_str atomic_op)
+           (Option.value ~default:(-1) run_ptr))
+       !schedule_for_checks;
 
-  Printf.printf "\nrequested \n";
-  List.iter
-    (fun (proc_id, atomic_op, run_ptr) ->
-      Printf.printf "%d, %s, %d\n" proc_id
-        (Atomic_op.to_str atomic_op)
-        (Option.value ~default:(-1) run_ptr))
-    init_schedule; *)
+     Printf.printf "\nrequested \n";
+     List.iter
+       (fun (proc_id, atomic_op, run_ptr) ->
+         Printf.printf "%d, %s, %d\n" proc_id
+           (Atomic_op.to_str atomic_op)
+           (Option.value ~default:(-1) run_ptr))
+       init_schedule; *)
+  let init_schedule =
+    List.map
+      (fun ((proc_id : int), (atomic_op : Atomic_op.t), (run_ptr : int option)) ->
+        let atomic_op =
+          match atomic_op with
+          | CompareAndSwap _ ->
+              Atomic_op.CompareAndSwap
+                (ref
+                   (`Unknown ((fun () -> assert false), fun () -> assert false)))
+          | v -> v
+        in
+        ((proc_id : int), (atomic_op : Atomic_op.t), (run_ptr : int option)))
+      init_schedule
+  in
 
   let remaining_schedule =
     let rec f schedule1 schedule2 =
@@ -272,6 +303,7 @@ let do_run_lazy init_func init_schedule =
     match !schedule_for_checks with
     | [] | _ :: [] -> None
     | _ -> f !schedule_for_checks init_schedule
+    (* |> ignore; None *)
   in
 
   schedule_for_checks := init_schedule;
@@ -282,6 +314,7 @@ let do_run_lazy init_func init_schedule =
     CCVector.iter (fun proc -> proc.discontinue_f ()) processes;
     CCVector.clear processes;
     atomics_counter := 1;
+    true_schedule_rev := []
     (*set up run *)
   in
 
@@ -293,22 +326,21 @@ let do_run_lazy init_func init_schedule =
         init_schedule
     | Some remaining_schedule ->
         (* List.iter
-          (fun (proc_id, atomic_op, run_ptr) ->
-            Printf.printf "%d, %s, %d\n" proc_id
-              (Atomic_op.to_str atomic_op)
-              (Option.value ~default:(-1) run_ptr))
-          remaining_schedule; *)
-
+           (fun (proc_id, atomic_op, run_ptr) ->
+             Printf.printf "%d, %s, %d\n" proc_id
+               (Atomic_op.to_str atomic_op)
+               (Option.value ~default:(-1) run_ptr))
+           remaining_schedule; *)
         remaining_schedule
   in
-  (* Printf.printf "\n"; *)
 
+  (* Printf.printf "\n"; *)
   tracing := true;
 
   (* cache the number of processes in case it's expensive*)
   let num_processes = CCVector.length processes in
   (* current number of ops we are through the current run *)
-  let rec run_trace s true_schedule_rev () =
+  let rec run_trace s () =
     tracing := false;
     !every_func ();
     tracing := true;
@@ -320,7 +352,7 @@ let do_run_lazy init_func init_schedule =
           num_interleavings := !num_interleavings + 1;
 
           if !record_traces_flag then
-            Trace_tracker.add_trace (List.rev true_schedule_rev);
+            Trace_tracker.add_trace (List.rev !true_schedule_rev);
 
           (match !interleavings_chan with
           | None -> ()
@@ -335,32 +367,31 @@ let do_run_lazy init_func init_schedule =
         else
           let process_to_run = CCVector.get processes process_id_to_run in
           let at = process_to_run.next_op in
-(* 
-          
-          Printf.printf "next_op: %s, next_op':%s\n"
-            (Atomic_op.to_str process_to_run.next_op)
-            (Atomic_op.to_str next_op);
-          Printf.printf "repr: %d, repr':%d\n"
-            (Option.value ~default:(-1) process_to_run.next_repr)
-            (Option.value ~default:(-1) next_ptr); *)
 
+          (*
+
+                     Printf.printf "next_op: %s, next_op':%s\n"
+                       (Atomic_op.to_str process_to_run.next_op)
+                       (Atomic_op.to_str next_op);
+                     Printf.printf "repr: %d, repr':%d\n"
+                       (Option.value ~default:(-1) process_to_run.next_repr)
+                       (Option.value ~default:(-1) next_ptr); *)
           assert (Atomic_op.weak_cmp process_to_run.next_op next_op);
           assert (process_to_run.next_repr = next_ptr);
 
-          let true_schedule_rev =
+          true_schedule_rev :=
             (process_id_to_run, process_to_run.next_op, process_to_run.next_repr)
-            :: true_schedule_rev
-          in
+            :: !true_schedule_rev;
 
           process_to_run.resume_func
-            (handler process_id_to_run (run_trace schedule true_schedule_rev));
+            (handler process_id_to_run (run_trace schedule));
           match at with
           | CompareAndSwap cas -> (
               match !cas with `Unknown _ -> assert false | _ -> ())
           | _ -> ())
   in
   tracing := true;
-  run_trace init_schedule [] ();
+  run_trace init_schedule ();
   tracing := false;
   num_states := !num_states + 1;
 
@@ -376,8 +407,13 @@ let do_run_lazy init_func init_schedule =
     |> Seq.map (fun (id, _) -> id)
     |> IntSet.of_seq
   in
-  match last_element init_schedule with
+  match (* last_element init_schedule *) List.hd !true_schedule_rev with
   | run_proc, run_op, run_ptr ->
+      (match run_op with
+      | CompareAndSwap cas -> (
+          match !cas with `Unknown (_, force) -> force () | _ -> ())
+      | _ -> ());
+
       {
         procs;
         enabled = current_enabled;
@@ -491,9 +527,9 @@ let same_proc state_cell1 state_cell2 =
 
 module Causality = struct
   let hb ((proc1 : int), ptr1, op1) ((proc2 : int), ptr2, op2) =
-    (* assumes the two ops are adjacent 
-      
-      the annotations here help optimize polymorphic compares
+    (* assumes the two ops are adjacent
+
+       the annotations here help optimize polymorphic compares
     *)
     let same_proc = proc1 = proc2 in
     let same_var =

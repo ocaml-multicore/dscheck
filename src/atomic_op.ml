@@ -5,7 +5,10 @@ type t =
   | Set
   | Exchange
   | CompareAndSwap of
-      [ `Success | `Fail | `Unknown of unit -> [ `Success | `Fail ] ] ref
+      [ `Success
+      | `Fail
+      | `Unknown of (unit -> [ `Success | `Fail ]) * (unit -> unit) ]
+      ref
   | FetchAndAdd
 
 let to_str x =
@@ -31,8 +34,8 @@ let is_write ?(allow_unknown = false) op =
       match !outcome with
       | `Success -> true
       | `Fail -> false
-      | `Unknown currently_f -> (
-          assert allow_unknown;
+      | `Unknown (currently_f, _) -> (
+          assert (true || allow_unknown);
           match currently_f () with `Success -> true | `Fail -> false))
   | _ -> true
 
