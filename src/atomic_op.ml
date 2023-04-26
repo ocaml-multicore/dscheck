@@ -35,7 +35,7 @@ let is_write ?(allow_unknown = false) op =
       | `Success -> true
       | `Fail -> false
       | `Unknown (currently_f, _) -> (
-          assert (true || allow_unknown);
+          assert (  allow_unknown);
           match currently_f () with `Success -> true | `Fail -> false))
   | _ -> true
 
