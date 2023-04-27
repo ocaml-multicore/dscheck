@@ -145,7 +145,11 @@ let handler current_process_id runner =
                   ref
                     (`Unknown
                       ( (fun () ->
-                          let result = Atomic.get x == s in
+                          let result =
+                            match !forced with
+                            | Some v -> v
+                            | None -> Atomic.get x == s
+                          in
                           (* status := if result then `Success else `Fail; *)
                           if result then `Success else `Fail),
                         force ))
