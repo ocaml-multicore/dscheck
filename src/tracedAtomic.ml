@@ -12,7 +12,6 @@ type _ Effect.t +=
   | FetchAndAdd : (int t * int) -> int Effect.t
 
 module IntSet = Set.Make (Int)
-
 module IntMap = Map.Make (Int)
 
 let _string_of_set s = IntSet.fold (fun y x -> string_of_int y ^ "," ^ x) s ""
@@ -193,10 +192,53 @@ type state_cell = {
   mutable backtrack : IntSet.t;
 }
 
-let num_runs = ref 0
+let num_states = ref 0
+let num_interleavings = ref 0
 
 (* we stash the current state in case a check fails and we need to log it *)
 let schedule_for_checks = ref []
+
+let var_name i =
+  match i with
+  | None -> ""
+  | Some i ->
+      let c = Char.chr (i + 96) in
+      Printf.sprintf "%c" c
+
+let print_execution_sequence chan =
+  let highest_proc =
+    List.fold_left
+      (fun highest (curr_proc, _, _) ->
+        if curr_proc > highest then curr_proc else highest)
+      (-1) !schedule_for_checks
+  in
+
+  let bar =
+    List.init ((highest_proc * 20) + 20) (fun _ -> "-") |> String.concat ""
+  in
+  Printf.fprintf chan "\nsequence %d\n" !num_interleavings;
+  Printf.fprintf chan "%s\n" bar;
+  List.init (highest_proc + 1) (fun proc ->
+      Printf.fprintf chan "P%d\t\t\t" proc)
+  |> ignore;
+  Printf.fprintf chan "\n%s\n" bar;
+
+  List.iter
+    (fun s ->
+      match s with
+      | last_run_proc, last_run_op, last_run_ptr ->
+          let last_run_ptr = var_name last_run_ptr in
+          let tabs =
+            List.init last_run_proc (fun _ -> "\t\t\t") |> String.concat ""
+          in
+          Printf.fprintf chan "%s%s %s\n" tabs
+            (atomic_op_str last_run_op)
+            last_run_ptr)
+    !schedule_for_checks;
+  Printf.fprintf chan "%s\n%!" bar
+
+let interleavings_chan = (ref None : out_channel option ref)
+let record_traces_flag = ref false
 
 let do_run init_func init_schedule =
   init_func ();
@@ -214,6 +256,15 @@ let do_run init_func init_schedule =
     | [] ->
         if !finished_processes == num_processes then (
           tracing := false;
+
+          num_interleavings := !num_interleavings + 1;
+          if !record_traces_flag then
+            Trace_tracker.add_trace !schedule_for_checks;
+
+          (match !interleavings_chan with
+          | None -> ()
+          | Some chan -> print_execution_sequence chan);
+
           !final_func ();
           tracing := true)
     | (process_id_to_run, next_op, next_ptr) :: schedule ->
@@ -231,8 +282,8 @@ let do_run init_func init_schedule =
   run_trace init_schedule ();
   finished_processes := 0;
   tracing := false;
-  num_runs := !num_runs + 1;
-  if !num_runs mod 1000 == 0 then Printf.printf "run: %d\n%!" !num_runs;
+  num_states := !num_states + 1;
+  (* if !num_states mod 1000 == 0 then Printf.printf "run: %d\n%!" !num_states; *)
   let procs =
     CCVector.mapi
       (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr })
@@ -304,31 +355,45 @@ let check f =
   let tracing_at_start = !tracing in
   tracing := false;
   if not (f ()) then (
-    Printf.printf "Found assertion violation at run %d:\n" !num_runs;
-    List.iter
-      (fun s ->
-        match s with
-        | last_run_proc, last_run_op, last_run_ptr ->
-            let last_run_ptr =
-              Option.map string_of_int last_run_ptr |> Option.value ~default:""
-            in
-            Printf.printf "Process %d: %s %s\n" last_run_proc
-              (atomic_op_str last_run_op)
-              last_run_ptr)
-      !schedule_for_checks;
+    Printf.printf "Found assertion violation at run %d:\n" !num_interleavings;
+    print_execution_sequence stdout;
     assert false);
   tracing := tracing_at_start
 
 let reset_state () =
   finished_processes := 0;
   atomics_counter := 1;
-  num_runs := 0;
+  num_states := 0;
+  num_interleavings := 0;
   schedule_for_checks := [];
+  Trace_tracker.clear_traces ();
   CCVector.clear processes
 
-let trace func =
+let dscheck_trace_file_env = Sys.getenv_opt "dscheck_trace_file"
+
+let dpor func =
   reset_state ();
   let empty_state = do_run func [ (0, Start, None) ] :: [] in
   let empty_clock = IntMap.empty in
   let empty_last_access = IntMap.empty in
   explore func empty_state empty_clock empty_last_access
+
+let trace ?interleavings ?(record_traces = false) func =
+  record_traces_flag := record_traces || Option.is_some dscheck_trace_file_env;
+  interleavings_chan := interleavings;
+
+  dpor func;
+
+  (* print reports *)
+  (match !interleavings_chan with
+  | None -> ()
+  | Some chan ->
+      Printf.fprintf chan "\nexplored %d interleavings and %d states\n"
+        !num_interleavings !num_states);
+
+  match dscheck_trace_file_env with
+  | None -> ()
+  | Some path ->
+      let chan = open_out path in
+      Trace_tracker.print_traces chan;
+      close_out chan

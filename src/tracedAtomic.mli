@@ -46,8 +46,16 @@ val incr : int t -> unit
 val decr : int t -> unit
 (** [decr r] atomically decrements the value of [r] by [1]. *)
 
-val trace : (unit -> unit) -> unit
-(** start the simulation trace *)
+val trace :
+  ?interleavings:out_channel -> ?record_traces:bool -> (unit -> unit) -> unit
+(** [trace ?interleavings ?record_traces f] starts the simulation trace.
+
+  If [interleavings] output channel is provided, DSCheck will continously
+  print the visited interleavings there.
+
+  [record_traces] enables [Trace_tracker], which is typically used for
+  testing DSCheck itself.
+*)
 
 val spawn : (unit -> unit) -> unit
 (** spawn [f] as a new 'thread' *)
