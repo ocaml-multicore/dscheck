@@ -324,8 +324,12 @@ implementation, here's brief explanation in the context of DSCheck.
     Source-DPOR and the existing implementation quite naturally as operations
     with multiple happens-before and happens-after dependencies.
 - Further performance improvements. In particular implementation of wake-up
-  trees to eliminate sleep-set blocking or leap towards
+  trees to eliminate sleep-set blocking or a leap towards
   [TruST](https://plv.mpi-sws.org/genmc/popl2022-trust.pdf).
+- Support nested domain spawns and concurrent logic in the main test function.
+  DSCheck lets us spawn n domains in the main test function and validate their
+  interleavings, which is enough to test lock-free algorithms, but many
+  real-world programs are more complicated.
 
 ## Reference Implementations
 
