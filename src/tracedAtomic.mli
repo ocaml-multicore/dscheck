@@ -47,8 +47,14 @@ val decr : int t -> unit
 (** [decr r] atomically decrements the value of [r] by [1]. *)
 
 val trace :
-  ?interleavings:out_channel -> ?record_traces:bool -> (unit -> unit) -> unit
+  ?impl:[ `Random of int | `Dpor ] ->
+  ?interleavings:out_channel ->
+  ?record_traces:bool ->
+  (unit -> unit) ->
+  unit
 (** [trace ?interleavings ?record_traces f] starts the simulation trace.
+
+  [impl] lets user choose the underlying exploration algorithm.
 
   If [interleavings] output channel is provided, DSCheck will continously
   print the visited interleavings there.
