@@ -352,6 +352,11 @@ let filter_out_happen_after operation sequence =
     sequence
 
 let rec explore_source func state sleep_sets =
+  (* The code here closely follows the Algorithm 1 outlined in [Source Sets:
+      A Foundation for Optimal Dynamic Partial Order Reduction]. Likewise
+      variable names (e.g. reversible race, indep_and_p, initials) etc.
+      reference constructs introduced in the paper.
+  *)
   let sleep = ref (last_element sleep_sets) in
   let s = last_element state in
   let p_maybe = IntSet.min_elt_opt (IntSet.diff s.enabled !sleep) in
@@ -386,7 +391,7 @@ let rec explore_source func state sleep_sets =
                     match proc'.run_ptr with
                     | None -> false
                     | Some run_ptr -> obj_ptr = run_ptr && proc'.run_proc <> p)
-                  new_state
+                  state
               in
               match List.rev dependent_ops with [] -> None | v :: _ -> Some v)
         in
@@ -444,13 +449,13 @@ let rec explore_source func state sleep_sets =
                sequences from E.
             *)
             let initials =
-              let rec f = function
+              let rec loop = function
                 | [] -> []
                 | initial :: sequence ->
                     initial.run_proc
-                    :: f (filter_out_happen_after initial sequence)
+                    :: loop (filter_out_happen_after initial sequence)
               in
-              f indep_and_p
+              loop indep_and_p
             in
 
             (* Exploring one of the initials guarantees that reversal has been
