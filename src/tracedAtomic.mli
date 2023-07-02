@@ -47,7 +47,7 @@ val decr : int t -> unit
 (** [decr r] atomically decrements the value of [r] by [1]. *)
 
 val trace :
-  ?impl:[ `Random of int | `Dpor ] ->
+  ?impl:[ `Random of int | `Dpor | `Dpor_source ] ->
   ?interleavings:out_channel ->
   ?record_traces:bool ->
   (unit -> unit) ->
