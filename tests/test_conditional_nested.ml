@@ -19,4 +19,4 @@ let test () =
     Format.printf "seen_b=%i b=%i c=%i ok=%b@." (!seen_b) (Atomic.get b) (Atomic.get c)
       (Atomic.get ok)) *)
 
-let () = Atomic.trace test
+let () = Atomic.trace ~record_traces:true test

@@ -9,7 +9,7 @@ let drain queue =
   !remaining
 
 let producer_consumer () =
-  Atomic.trace (fun () ->
+  Atomic.trace ~record_traces:true (fun () ->
       let queue = Michael_scott_queue.create () in
       let items_total = 4 in
 
