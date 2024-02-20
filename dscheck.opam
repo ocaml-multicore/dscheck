@@ -7,8 +7,8 @@ license: "ISC"
 homepage: "https://github.com/ocaml-multicore/dscheck"
 bug-reports: "https://github.com/ocaml-multicore/dscheck/issues"
 depends: [
-  "ocaml" {>= "5.0.0"}
-  "dune" {>= "2.9"}
+  "ocaml" {>= "4.12.0"}
+  "dune" {>= "3.9"}
   "containers"
   "tsort"
   "oseq"
@@ -25,11 +25,9 @@ build: [
     name
     "-j"
     jobs
-    "--promote-install-files=false"
     "@install"
     "@runtest" {with-test}
     "@doc" {with-doc}
   ]
-  ["dune" "install" "-p" name "--create-install-files" name]
 ]
 dev-repo: "git+https://github.com/ocaml-multicore/dscheck.git"

@@ -1,3 +1,5 @@
 (library
  (public_name dscheck)
+ (enabled_if
+  (>= %{ocaml_version} 5))
  (libraries containers oseq))
