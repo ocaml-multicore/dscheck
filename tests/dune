@@ -1,54 +1,77 @@
 (test
  (name test_list)
  (libraries dscheck alcotest)
+ (build_if
+  (>= %{ocaml_version} 5))
  (modules test_list))
 
 (test
  (name test_naive_counter)
  (libraries dscheck alcotest)
+ (build_if
+  (>= %{ocaml_version} 5))
  (modules test_naive_counter))
 
 (test
  (name test_michael_scott_queue)
  (libraries dscheck alcotest)
+ (build_if
+  (>= %{ocaml_version} 5))
  (modules test_michael_scott_queue michael_scott_queue))
 
 (test
  (name test_trace)
  (libraries dscheck alcotest)
+ (build_if
+  (>= %{ocaml_version} 5))
  (modules test_trace))
 
 (rule
- (with-stdout-to
-  report_trace.output
-  (run ./test_trace.exe)))
+ (action
+  (with-stdout-to
+   report_trace.output
+   (run ./test_trace.exe)))
+ (enabled_if
+  (>= %{ocaml_version} 5)))
 
 (rule
  (alias runtest)
  (action
-  (diff report_trace.expected report_trace.output)))
+  (diff report_trace.expected report_trace.output))
+ (enabled_if
+  (>= %{ocaml_version} 5)))
 
 (test
  (name test_conditional_nested)
  (libraries dscheck alcotest)
+ (build_if
+  (>= %{ocaml_version} 5))
  (modules test_conditional_nested))
 
 (test
  (name test_conditional_ssb)
  (libraries dscheck alcotest)
+ (build_if
+  (>= %{ocaml_version} 5))
  (modules test_conditional_ssb))
 
 (test
  (name test_commutative)
  (libraries dscheck alcotest)
+ (build_if
+  (>= %{ocaml_version} 5))
  (modules test_commutative))
 
 (test
  (name test_hb)
  (libraries dscheck alcotest)
+ (build_if
+  (>= %{ocaml_version} 5))
  (modules test_hb))
 
 (executable
  (name gen_program)
  (libraries dscheck cmdliner)
+ (enabled_if
+  (>= %{ocaml_version} 5))
  (modules gen_program))
