@@ -15,11 +15,6 @@ are maintained regardless of scheduling decisions.
 
 # Motivation
 
-*Note: This README assumes the optimizations in [Granular Dependency
-relation](https://github.com/ocaml-multicore/dscheck/pull/22) are in. It's in
-the process of being reviwed soon. Until then you can pin your installation to
-`granular-dependency-relation` to use it.*
-
 As experience shows, fine-grained concurrency is notoriously challenging to get
 right.
 
