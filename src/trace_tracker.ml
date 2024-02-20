@@ -1,11 +1,5 @@
 module Op = struct
-  type t = {
-    proc : int;
-    variable : int;
-    step : int;
-    is_read : bool;
-    atomic_op : Atomic_op.t;
-  }
+  type t = { proc : int; variable : int; step : int; atomic_op : Atomic_op.t }
 
   let is_dependent t1 t2 =
     t1.variable == t2.variable
@@ -58,7 +52,7 @@ module Trace = struct
             Hashtbl.replace steps proc (current + 1);
             let step = Hashtbl.find steps proc in
 
-            { proc; variable; step; atomic_op; is_read = false })
+            { proc; variable; step; atomic_op })
           variable)
       schedule_for_checks
     |> List.filter_map Fun.id
