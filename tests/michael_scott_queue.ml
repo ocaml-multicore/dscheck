@@ -15,7 +15,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *)
 
-(* Michael-Scott queue copied over from [lockfree](github.com/ocaml-multicore/lockfree) *)
+(* Michael-Scott queue copied over from [saturn](github.com/ocaml-multicore/saturn) *)
 module Atomic = Dscheck.TracedAtomic
 
 type 'a node = Nil | Next of 'a * 'a node Atomic.t
@@ -23,7 +23,7 @@ type 'a t = { head : 'a node Atomic.t; tail : 'a node Atomic.t }
 
 let create () =
   let head = Next (Obj.magic (), Atomic.make Nil) in
-  { head = Atomic.make head; tail = Atomic.make head }
+  { head = Atomic.make_contended head; tail = Atomic.make_contended head }
 
 let is_empty q =
   match Atomic.get q.head with

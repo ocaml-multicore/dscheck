@@ -2,7 +2,7 @@ module Atomic = Dscheck.TracedAtomic
 
 let counter incr () =
   let c1 = Atomic.make 0 in
-  let c2 = Atomic.make 0 in
+  let c2 = Atomic.make_contended 0 in
   Atomic.spawn (fun () -> incr c1);
   Atomic.spawn (fun () ->
       incr c1;
