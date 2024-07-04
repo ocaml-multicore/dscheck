@@ -39,6 +39,8 @@ let make v =
     atomics_counter := !atomics_counter + 1;
     (Atomic.make v, i)
 
+let make_contended = make
+
 let get r =
   if !tracing then perform (Get r) else match r with v, _ -> Atomic.get v
 
