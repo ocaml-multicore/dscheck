@@ -1,3 +1,7 @@
+## 0.5.0
+
+- Add Atomic.make_contended (@lyrm, review : @polytypic)
+
 ## 0.4.0
 
 - Made (empty) package available on OCaml 4 (@polytypic, review: @lyrm)
