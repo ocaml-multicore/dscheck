@@ -137,10 +137,10 @@ let handler current_process_id runner =
                 let rec status =
                   ref
                     (`Unknown
-                      (fun () ->
-                        let result = Atomic.get x == s in
-                        status := if result then `Success else `Fail;
-                        if result then `Success else `Fail))
+                       (fun () ->
+                         let result = Atomic.get x == s in
+                         status := if result then `Success else `Fail;
+                         if result then `Success else `Fail))
                 in
                 update_process_data current_process_id
                   (fun h ->
@@ -255,7 +255,7 @@ let do_run init_func init_schedule =
     tracing := true;
     match s with
     | [] ->
-        if !finished_processes == num_processes then (
+        if !finished_processes == num_processes then begin
           tracing := false;
 
           num_interleavings := !num_interleavings + 1;
@@ -268,8 +268,9 @@ let do_run init_func init_schedule =
           | Some chan -> print_execution_sequence chan);
 
           !final_func ();
-          tracing := true)
-    | (process_id_to_run, next_op, next_ptr) :: schedule -> (
+          tracing := true
+        end
+    | (process_id_to_run, next_op, next_ptr) :: schedule -> begin
         if !finished_processes == num_processes then
           (* this should never happen *)
           failwith "no enabled processes"
@@ -287,9 +288,11 @@ let do_run init_func init_schedule =
           process_to_run.resume_func
             (handler process_id_to_run (run_trace schedule true_schedule_rev));
           match at with
-          | CompareAndSwap cas -> (
-              match !cas with `Unknown _ -> assert false | _ -> ())
-          | _ -> ())
+          | CompareAndSwap cas -> begin
+              match !cas with `Unknown _ -> assert false | _ -> ()
+            end
+          | _ -> ()
+      end
   in
   tracing := true;
   run_trace init_schedule [] ();
@@ -581,7 +584,7 @@ let rec explore func state clock last_access =
           pre_s.backtrack <- IntSet.add j pre_s.backtrack
         else pre_s.backtrack <- IntSet.union pre_s.backtrack pre_s.enabled)
     s.procs;
-  if IntSet.cardinal s.enabled > 0 then (
+  if IntSet.cardinal s.enabled > 0 then begin
     let p = IntSet.min_elt s.enabled in
     let dones = ref IntSet.empty in
     s.backtrack <- IntSet.singleton p;
@@ -602,7 +605,8 @@ let rec explore func state clock last_access =
       in
       let new_clock = IntMap.add j state_time clock in
       explore func statedash new_clock new_last_access
-    done)
+    done
+  end
 
 let every f = every_func := f
 let final f = final_func := f
@@ -610,10 +614,11 @@ let final f = final_func := f
 let check f =
   let tracing_at_start = !tracing in
   tracing := false;
-  if not (f ()) then (
+  if not (f ()) then begin
     Printf.printf "Found assertion violation at run %d:\n" !num_interleavings;
     print_execution_sequence stdout;
-    assert false);
+    assert false
+  end;
   tracing := tracing_at_start
 
 let reset_state () =

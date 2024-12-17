@@ -27,13 +27,15 @@ let is_write ?(allow_unknown = false) op =
   *)
   match op with
   | Get | Make -> false
-  | CompareAndSwap outcome -> (
+  | CompareAndSwap outcome -> begin
       match !outcome with
       | `Success -> true
       | `Fail -> false
-      | `Unknown currently_f -> (
+      | `Unknown currently_f -> begin
           assert allow_unknown;
-          match currently_f () with `Success -> true | `Fail -> false))
+          match currently_f () with `Success -> true | `Fail -> false
+        end
+    end
   | _ -> true
 
 let weak_cmp t1 t2 =
