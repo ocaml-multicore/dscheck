@@ -75,17 +75,17 @@ let discontinue k () =
       effc = (fun (type a) (_ : a Effect.t) -> None);
     }
 
-let processes = CCVector.create ()
+let processes = Dynarray.create ()
 
 let update_process_data process_id f op repr k =
-  let process_rec = CCVector.get processes process_id in
+  let process_rec = Dynarray.get processes process_id in
   process_rec.resume_func <- f;
   process_rec.next_repr <- repr;
   process_rec.next_op <- op;
   process_rec.discontinue_f <- discontinue k
 
 let finish_process process_id =
-  let process_rec = CCVector.get processes process_id in
+  let process_rec = Dynarray.get processes process_id in
   process_rec.finished <- true;
   process_rec.discontinue_f <- (fun () -> ());
   finished_processes := !finished_processes + 1
@@ -168,7 +168,7 @@ let handler current_process_id runner =
 let spawn f =
   let fiber_f = fiber f in
   let resume_func = continue_with fiber_f () in
-  CCVector.push processes
+  Dynarray.add_last processes
     {
       next_op = Start;
       next_repr = None;
@@ -246,7 +246,7 @@ let do_run init_func init_schedule =
   tracing := true;
   schedule_for_checks := init_schedule;
   (* cache the number of processes in case it's expensive*)
-  let num_processes = CCVector.length processes in
+  let num_processes = Dynarray.length processes in
   (* current number of ops we are through the current run *)
   finished_processes := 0;
   let rec run_trace s true_schedule_rev () =
@@ -275,7 +275,7 @@ let do_run init_func init_schedule =
           (* this should never happen *)
           failwith "no enabled processes"
         else
-          let process_to_run = CCVector.get processes process_id_to_run in
+          let process_to_run = Dynarray.get processes process_id_to_run in
           let at = process_to_run.next_op in
           assert (Atomic_op.weak_cmp process_to_run.next_op next_op);
           assert (process_to_run.next_repr = next_ptr);
@@ -301,19 +301,20 @@ let do_run init_func init_schedule =
   tracing := false;
   num_states := !num_states + 1;
   let procs =
-    CCVector.mapi
+    Dynarray.mapi
       (fun i p -> { proc_id = i; op = p.next_op; obj_ptr = p.next_repr })
       processes
-    |> CCVector.to_list
+    |> Dynarray.to_list
   in
   let current_enabled =
-    CCVector.to_seq processes |> OSeq.zip_index
+    Dynarray.to_seq processes
+    |> Seq.mapi (fun i x -> (i, x))
     |> Seq.filter (fun (_, proc) -> not proc.finished)
     |> Seq.map (fun (id, _) -> id)
     |> IntSet.of_seq
   in
-  CCVector.iter (fun proc -> proc.discontinue_f ()) processes;
-  CCVector.clear processes;
+  Dynarray.iter (fun proc -> proc.discontinue_f ()) processes;
+  Dynarray.clear processes;
   atomics_counter := 1;
   match last_element init_schedule with
   | run_proc, run_op, run_ptr ->
@@ -629,7 +630,7 @@ let reset_state () =
   num_interleavings := 0;
   schedule_for_checks := [];
   Trace_tracker.clear_traces ();
-  CCVector.clear processes
+  Dynarray.clear processes
 
 let dscheck_trace_file_env = Sys.getenv_opt "dscheck_trace_file"
 

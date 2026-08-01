@@ -19,11 +19,8 @@
  (allow_empty)
  (depends
   (ocaml
-   (>= 4.12.0))
+   (>= 5.2.0))
   dune
-  containers
-  tsort
-  oseq
   (alcotest
    (and
     (>= 1.6.0)

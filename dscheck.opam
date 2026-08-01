@@ -7,11 +7,8 @@ license: "ISC"
 homepage: "https://github.com/ocaml-multicore/dscheck"
 bug-reports: "https://github.com/ocaml-multicore/dscheck/issues"
 depends: [
-  "ocaml" {>= "4.12.0"}
+  "ocaml" {>= "5.2.0"}
   "dune" {>= "3.9"}
-  "containers"
-  "tsort"
-  "oseq"
   "alcotest" {>= "1.6.0" & with-test}
   "cmdliner"
   "odoc" {with-doc}
