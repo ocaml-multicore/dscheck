@@ -1,3 +1,9 @@
+## 0.6.0
+
+- switch to Dynarray to remove non-stdlib dependencies (#32 @avsm @sadiqj)
+- remove stray dependency on tsort (#32 #31 @avsm, reported by @glondu)
+- minimum dependency is now ocaml 5.2.0+ and also works with oxcaml (@avsm)
+
 ## 0.5.0
 
 - Add Atomic.make_contended (@lyrm, review : @polytypic)
