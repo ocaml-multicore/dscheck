@@ -307,7 +307,8 @@ let do_run init_func init_schedule =
     |> Dynarray.to_list
   in
   let current_enabled =
-    Dynarray.to_seq processes |> Seq.mapi (fun i x -> (i, x))
+    Dynarray.to_seq processes
+    |> Seq.mapi (fun i x -> (i, x))
     |> Seq.filter (fun (_, proc) -> not proc.finished)
     |> Seq.map (fun (id, _) -> id)
     |> IntSet.of_seq
