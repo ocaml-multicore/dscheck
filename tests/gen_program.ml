@@ -128,23 +128,23 @@ module Step = struct
 
   let rec run ~globals = function
     | Write { var_id; new_value; next } ->
-        Atomic.set (CCVector.get globals var_id) new_value;
+        Atomic.set (Dynarray.get globals var_id) new_value;
         run ~globals next
     | Read { var_id; next } ->
-        ignore (Atomic.get (CCVector.get globals var_id));
+        ignore (Atomic.get (Dynarray.get globals var_id));
         run ~globals next
     | CompareAndSet { var_id; old_value; new_value; next } ->
         ignore
           (Atomic.compare_and_set
-             (CCVector.get globals var_id)
+             (Dynarray.get globals var_id)
              old_value new_value);
         run ~globals next
     | FetchAndAdd { var_id; delta; next } ->
-        ignore (Atomic.fetch_and_add (CCVector.get globals var_id) delta);
+        ignore (Atomic.fetch_and_add (Dynarray.get globals var_id) delta);
         run ~globals next
     | Conditional { var_ids; conditional; on_true; next } ->
         let variables =
-          List.map (fun var_id -> CCVector.get globals var_id) var_ids
+          List.map (fun var_id -> Dynarray.get globals var_id) var_ids
         in
         if Conditional.eval conditional variables then run ~globals on_true;
         run ~globals next
@@ -215,11 +215,11 @@ end
 
 module Program = struct
   type thread = Step.t
-  type t = { globals : (int, CCVector.ro) CCVector.t; threads : thread list }
+  type t = { globals : int Dynarray.t; threads : thread list }
 
   let run ~impl { globals; threads } =
     Atomic.trace ~impl ~record_traces:true (fun () ->
-        let globals = CCVector.map Atomic.make globals |> CCVector.freeze in
+        let globals = Dynarray.map Atomic.make globals in
         List.iter
           (fun thread -> Atomic.spawn (fun () -> Step.run ~globals thread))
           threads;
@@ -227,7 +227,7 @@ module Program = struct
     Dscheck.Trace_tracker.get_traces ()
 
   let print { globals; threads } =
-    CCVector.iteri
+    Dynarray.iteri
       (fun var_id value ->
         Printf.printf "let %c = Atomic.make %d in\n" (var_name var_id) value)
       globals;
@@ -241,7 +241,7 @@ end
 
 let run_random config () =
   Random.init config.seed;
-  let globals = CCVector.of_list (List.init config.global_count Fun.id) in
+  let globals = Dynarray.of_list (List.init config.global_count Fun.id) in
   let thread_f = Step.gen ~config ~fuel:config.operation_count in
   let threads = List.init config.domain_count (fun _ -> thread_f ()) in
   let program = ({ globals; threads } : Program.t) in
